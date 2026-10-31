@@ -1,0 +1,35 @@
+{
+  "name": "physics-sim",
+  "productName": "Physics Sim",
+  "version": "0.1.0",
+  "description": "Interactive physics sandbox with rigid bodies, cloth, soft bodies, fluids, orbital gravity and a path-traced renderer.",
+  "private": true,
+  "type": "module",
+  "main": "desktop-dist/main.cjs",
+  "author": "Just-Rice",
+  "license": "MIT",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@dimforge/rapier3d-compat": "^0.21.0",
+    "idb-keyval": "^6.3.0",
+    "lil-gui": "^0.21.0",
+    "three": "^0.187.0",
+    "three-gpu-pathtracer": "^0.0.27",
+    "three-mesh-bvh": "^0.9.17",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "@types/three": "^0.187.0",
+    "coi-serviceworker": "^0.1.7",
+    "typescript": "^6.0.3",
+    "vite": "^8.3.5",
+    "vitest": "^5.0.5"
+  }
+}

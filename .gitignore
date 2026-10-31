@@ -1,0 +1,7 @@
+node_modules
+dist
+desktop-dist
+release
+*.log
+.DS_Store
+coverage
