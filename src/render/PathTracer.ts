@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
 import type { WebGLPathTracer, PhysicalCamera } from 'three-gpu-pathtracer';
 import type { RasterRenderer } from './RasterRenderer';
 import type { SettingsStore } from '../app/settings';
@@ -22,6 +23,9 @@ export function pathTracingUnsupportedReason(renderer: THREE.WebGLRenderer): str
 export class PathTracer {
   private pt: WebGLPathTracer;
   private camera: PhysicalCamera;
+  private denoiseQuad: FullScreenQuad;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private denoiseMat: any;
   private lastCamMatrix = new THREE.Matrix4();
   private lastProj = new THREE.Matrix4();
   private sceneDirty = true;
@@ -32,6 +36,13 @@ export class PathTracer {
   private live = false;
   /** When true, the next frames accumulate without being capped (photo mode). */
   photoMode = false;
+  private convergedDrawn = false;
+  private presentRequested = false;
+
+  /** Redraw the converged image once (e.g. after a selection or denoise change). */
+  requestPresent(): void {
+    this.presentRequested = true;
+  }
 
   static async create(view: RasterRenderer, settings: SettingsStore): Promise<PathTracer> {
     const mod: PTModule = await import('three-gpu-pathtracer');
@@ -57,9 +68,34 @@ export class PathTracer {
       this.view.renderer.render(scene, cam);
       this.view.sun.visible = sunVisible;
     };
+    // Edge-aware smart denoise of the accumulated image. It fades out as samples
+    // accumulate so converged stills keep full detail.
+    this.denoiseMat = new mod.DenoiseMaterial({ blending: THREE.NoBlending, premultipliedAlpha: view.renderer.getContextAttributes()!.premultipliedAlpha });
+    this.denoiseQuad = new FullScreenQuad(this.denoiseMat);
+    this.pt.renderToCanvasCallback = (target, renderer, quad) => {
+      const r = this.settings.data.raytracing;
+      const autoClear = renderer.autoClear;
+      renderer.autoClear = false;
+      if (r.denoise && r.denoiseStrength > 0) {
+        const s = this.pt.samples;
+        const fade = Math.max(0.15, 1 - s / 600);
+        this.denoiseMat.map = target.texture;
+        this.denoiseMat.sigma = 2.5 + 3 * r.denoiseStrength * fade;
+        this.denoiseMat.kSigma = 1;
+        this.denoiseMat.threshold = 0.02 + 0.08 * r.denoiseStrength * fade;
+        this.denoiseMat.opacity = (quad.material as THREE.ShaderMaterial & { opacity: number }).opacity;
+        this.denoiseQuad.render(renderer);
+      } else {
+        quad.render(renderer);
+      }
+      renderer.autoClear = autoClear;
+    };
     this.applySettings();
     settings.on((p) => {
-      if (p.startsWith('raytracing.')) this.applySettings();
+      if (p.startsWith('raytracing.')) {
+        this.applySettings();
+        this.requestPresent();
+      }
       if (p.startsWith('raytracing.dof') || p.startsWith('raytracing.fStop') || p.startsWith('raytracing.focus') || p.startsWith('raytracing.aperture')) this.syncCamera(true);
       if (p.startsWith('raytracing.bounces') || p.startsWith('raytracing.transmissive') || p.startsWith('raytracing.filterGlossy')) this.pt.reset();
     });
@@ -197,7 +233,7 @@ export class PathTracer {
    * Render one frame. `simRunning` selects live mode (lower resolution, short
    * history) versus still mode (full resolution, accumulate up to maxSamples).
    */
-  render(simRunning: boolean): void {
+  render(simRunning: boolean): boolean {
     const r = this.settings.data.raytracing;
     const live = simRunning && !this.photoMode;
     if (live !== this.live) {
@@ -226,8 +262,15 @@ export class PathTracer {
     }
     if (camMoved && this.initialised) this.pt.reset();
 
-    this.pt.pausePathTracing = !this.photoMode && this.pt.samples >= r.maxSamples;
+    const converged = !this.photoMode && this.pt.samples >= r.maxSamples;
+    this.pt.pausePathTracing = converged;
+    // Once converged, the canvas keeps showing the last frame; only redraw it
+    // when asked (helpers, denoise setting changes) instead of every frame.
+    if (converged && this.convergedDrawn && !this.presentRequested) return false;
+    this.convergedDrawn = converged;
+    this.presentRequested = false;
     this.pt.renderSample();
+    return true;
   }
 
   dispose(): void {

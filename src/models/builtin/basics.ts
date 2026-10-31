@@ -25,6 +25,11 @@ export const basics: ModelInput[] = [
     parts: single([box([0.2, 1.5, 3])], { material: 'concrete', body: 'fixed' }),
   },
   {
+    id: 'studio-backdrop', name: 'Studio backdrop', category: 'Basics',
+    description: 'Seamless white cyclorama for product-style renders',
+    parts: single([mesh('proc:cyclorama', { collider: 'trimesh', position: [0, 0.002, 0] })], { material: { color: '#f2f2ef', roughness: 0.75, density: 1000 }, body: 'fixed' }),
+  },
+  {
     id: 'bowl', name: 'Bowl (fixed)', category: 'Basics',
     description: 'Concave bowl using an exact triangle-mesh collider',
     parts: single([mesh('proc:bowl', { collider: 'trimesh', scale: [2, 2, 2] })], { material: 'marble', body: 'fixed' }),

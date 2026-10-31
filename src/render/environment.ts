@@ -92,10 +92,10 @@ export function generateEnvironment(preset: EnvironmentPreset, elevationDeg: num
 
   // Studio softboxes: [azimuthDeg, elevationDeg, halfWidthDeg, halfHeightDeg, intensity]
   const softboxes: [number, number, number, number, number][] = [
-    [40, 35, 22, 14, 7],
-    [-120, 25, 18, 10, 3.5],
-    [160, 60, 28, 12, 2.0],
-    [-30, 8, 50, 3, 1.4],
+    [50, 40, 24, 16, 9],
+    [-110, 28, 20, 12, 5],
+    [150, 65, 30, 14, 3],
+    [-30, 10, 60, 4, 1.6],
   ];
 
   for (let j = 0; j < H; j++) {

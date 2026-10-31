@@ -443,6 +443,7 @@ export class App implements AppContext {
     this.selected = part;
     this.selectionBox.part = part;
     this.inspector.show(part);
+    this.pt?.requestPresent();
   }
 
   ray(clientX: number, clientY: number): THREE.Ray {
@@ -688,7 +689,15 @@ export class App implements AppContext {
     const rtOn = this.settings.data.raytracing.enabled && this.pt;
     if (rtOn) {
       const moving = !this.settings.data.physics.paused && performance.now() - this.lastMotion < 250;
-      this.pt!.render(moving);
+      if (this.pt!.render(moving)) {
+        // Tool helpers (selection box, grab line, gizmos) are drawn on top of the traced image.
+        const r = this.view.renderer;
+        const autoClear = r.autoClear;
+        r.autoClear = false;
+        r.clearDepth();
+        r.render(this.view.helpers, this.view.camera);
+        r.autoClear = autoClear;
+      }
       this.updateRtBadge(moving);
     } else {
       this.view.render();

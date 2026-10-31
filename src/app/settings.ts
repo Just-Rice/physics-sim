@@ -53,6 +53,8 @@ export interface Settings {
     liveRenderScale: number;
     maxSamples: number;
     filterGlossy: number;
+    denoise: boolean;
+    denoiseStrength: number;
     dof: boolean;
     fStop: number;
     focusDistance: number;
@@ -111,6 +113,8 @@ export const defaultSettings = (): Settings => ({
     liveRenderScale: 0.5,
     maxSamples: 2000,
     filterGlossy: 0.5,
+    denoise: true,
+    denoiseStrength: 1,
     dof: false,
     fStop: 2.8,
     focusDistance: 8,

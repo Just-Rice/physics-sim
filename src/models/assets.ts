@@ -122,6 +122,39 @@ export function assetBounds(id: string, node: string | undefined, scale: THREE.V
 // ---------------------------------------------------------------------------
 // Procedural assets
 
+/** Seamless photo-studio backdrop: floor that curves up into a back wall. */
+function cycloramaGeometry(width = 60, depth = 30, radius = 2, height = 14): THREE.BufferGeometry {
+  const profile: [number, number][] = []; // (z, y)
+  profile.push([depth, 0]);
+  profile.push([0, 0]);
+  const arc = 16;
+  for (let i = 1; i <= arc; i++) {
+    const a = (i / arc) * (Math.PI / 2);
+    profile.push([-Math.sin(a) * radius, radius - Math.cos(a) * radius]);
+  }
+  profile.push([-radius, height]);
+  const cols = 2;
+  const pos: number[] = [];
+  const idx: number[] = [];
+  for (let i = 0; i < profile.length; i++) {
+    for (let j = 0; j <= cols; j++) {
+      const x = (j / cols - 0.5) * width;
+      pos.push(x, profile[i][1], profile[i][0]);
+    }
+  }
+  for (let i = 0; i < profile.length - 1; i++) {
+    for (let j = 0; j < cols; j++) {
+      const a = i * (cols + 1) + j, b = a + 1, c = a + cols + 1, d = c + 1;
+      idx.push(a, b, c, b, d, c);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return g;
+}
+
 function procMesh(geometry: THREE.BufferGeometry, name: string): THREE.Object3D {
   const g = new THREE.Group();
   g.name = name;
@@ -165,6 +198,8 @@ export function registerProceduralAssets(): void {
   pinGeo.translate(0, -0.19, 0);
   pinGeo.computeVertexNormals();
   registerAsset({ id: 'proc:pin', name: 'Bowling pin', root: procMesh(pinGeo, 'Pin'), source: 'proc' });
+
+  registerAsset({ id: 'proc:cyclorama', name: 'Studio backdrop', root: procMesh(cycloramaGeometry(), 'Cyclorama'), source: 'proc' });
 
   const ring = new THREE.TorusGeometry(0.3, 0.08, 24, 64);
   registerAsset({ id: 'proc:torus', name: 'Torus', root: procMesh(ring, 'Torus'), source: 'proc' });

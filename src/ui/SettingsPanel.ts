@@ -73,6 +73,8 @@ export class SettingsPanel {
     bind(rt, 'raytracing', 'liveRenderScale', 0.1, 1, 0.05).name('Resolution (moving)');
     bind(rt, 'raytracing', 'maxSamples', 16, 10000, 1).name('Max samples');
     bind(rt, 'raytracing', 'filterGlossy', 0, 1, 0.01).name('Glossy filter');
+    bind(rt, 'raytracing', 'denoise').name('Denoise');
+    bind(rt, 'raytracing', 'denoiseStrength', 0, 3, 0.05).name('Denoise strength');
     bind(rt, 'raytracing', 'dof').name('Depth of field');
     bind(rt, 'raytracing', 'fStop', 0.3, 22, 0.1).name('f-stop');
     bind(rt, 'raytracing', 'focusDistance', 0.2, 60, 0.05).name('Focus distance');
