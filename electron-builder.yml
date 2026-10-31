@@ -1,0 +1,36 @@
+# Mac app packaging. Build on macOS (see .github/workflows/mac-dmg.yml):
+#   npm run dist:mac
+appId: com.justrice.physicssim
+productName: Physics Sim
+copyright: Copyright © 2026 Physics Sim contributors
+directories:
+  output: release
+  buildResources: build
+files:
+  - dist/**
+  - desktop-dist/**
+  - package.json
+  - "!dist/**/*.map"
+asar: true
+mac:
+  category: public.app-category.education
+  icon: build/icon.png
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  darkModeSupport: true
+  extendInfo:
+    NSHighResolutionCapable: true
+dmg:
+  title: Physics Sim ${version}
+  artifactName: Physics-Sim-${version}-${arch}.${ext}
+  contents:
+    - { x: 150, y: 190 }
+    - { x: 390, y: 190, type: link, path: /Applications }
+linux:
+  target: dir
+  category: Education

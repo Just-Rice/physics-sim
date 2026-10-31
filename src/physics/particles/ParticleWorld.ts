@@ -1,4 +1,4 @@
-import { PROXY_STRIDE, ProxySet, proxyDistance } from './collision';
+import { PROXY_STRIDE, ProxySet, ProxyType, proxyDistance } from './collision';
 
 /**
  * Unified XPBD particle solver for cloth, soft bodies and fluids
@@ -814,8 +814,23 @@ export class ParticleWorld {
         const lx = vx + qw * tx + (qy * tz - qz * ty);
         const ly = vy + qw * ty + (qz * tx - qx * tz);
         const lz = vz + qw * tz + (qx * ty - qy * tx);
-        const dist = proxyDistance(set, o, lx, ly, lz, n, reach * 2 + 0.05);
+        let dist = proxyDistance(set, o, lx, ly, lz, n, reach * 2 + 0.05);
         if (dist >= reach) continue;
+        if (dist < 0 && data[o] === ProxyType.Box) {
+          // Anti-tunnelling for thin boxes (tank walls): push out through the
+          // face the particle came from, judged by its position last substep.
+          const pvx = pr[i * 3] - data[o + 1], pvy = pr[i * 3 + 1] - data[o + 2], pvz = pr[i * 3 + 2] - data[o + 3];
+          const ux = 2 * (qy * pvz - qz * pvy), uy = 2 * (qz * pvx - qx * pvz), uz = 2 * (qx * pvy - qy * pvx);
+          const plx = pvx + qw * ux + (qy * uz - qz * uy);
+          const ply = pvy + qw * uy + (qz * ux - qx * uz);
+          const plz = pvz + qw * uz + (qx * uy - qy * ux);
+          const ox = Math.abs(plx) - data[o + 8], oy = Math.abs(ply) - data[o + 9], oz = Math.abs(plz) - data[o + 10];
+          if (ox > 0 || oy > 0 || oz > 0) {
+            if (ox >= oy && ox >= oz) { n[0] = Math.sign(plx); n[1] = 0; n[2] = 0; dist = n[0] * lx - data[o + 8]; }
+            else if (oy >= oz) { n[0] = 0; n[1] = Math.sign(ply); n[2] = 0; dist = n[1] * ly - data[o + 9]; }
+            else { n[0] = 0; n[1] = 0; n[2] = Math.sign(plz); dist = n[2] * lz - data[o + 10]; }
+          }
+        }
         // local normal -> world: q * n
         const Qx = data[o + 4], Qy = data[o + 5], Qz = data[o + 6], Qw = data[o + 7];
         tx = 2 * (Qy * n[2] - Qz * n[1]); ty = 2 * (Qz * n[0] - Qx * n[2]); tz = 2 * (Qx * n[1] - Qy * n[0]);
