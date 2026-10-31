@@ -18,8 +18,8 @@ jobs:
   dmg:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -39,6 +39,9 @@ jobs:
             npx electron-builder --mac --publish never -c.mac.notarize=true
           else
             echo "No Developer ID secrets: ad-hoc signing (first launch needs right-click → Open)."
+            # Unset secrets arrive as empty strings; electron-builder would treat an
+            # empty CSC_LINK as a certificate path, so remove them entirely.
+            unset CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID
             export CSC_IDENTITY_AUTO_DISCOVERY=false
             npx electron-builder --mac --publish never -c.mac.identity=-
           fi
