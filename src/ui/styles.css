@@ -231,7 +231,7 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
 .lil-gui .title { font-weight: 600; }
 
 /* ---------- Overlays ---------- */
-.toast-host { position: absolute; top: 70px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; gap: 6px; align-items: center; pointer-events: none !important; z-index: 20; }
+.toast-host { position: absolute; top: 120px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; gap: 6px; align-items: center; pointer-events: none !important; z-index: 20; }
 .toast { padding: 8px 14px; font-size: 12.5px; animation: toast-in 0.18s ease-out; max-width: 520px; text-align: center; }
 .toast.error { border-color: rgba(255, 93, 93, 0.5); }
 @keyframes toast-in { from { opacity: 0; transform: translateY(-6px); } }

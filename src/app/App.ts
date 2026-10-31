@@ -584,7 +584,7 @@ export class App implements AppContext {
     if (files.length) await this.handleFiles(files);
   }
 
-  applySavedScene(scene: ReturnType<typeof serializeScene>): void {
+  applySavedScene(scene: ReturnType<typeof serializeScene>, quiet = false): void {
     this.select(null);
     this.sim.clear();
     this.particles?.reset();
@@ -621,7 +621,7 @@ export class App implements AppContext {
     this.view.controls.update();
     this.pt?.markSceneDirty();
     this.pt?.markMaterialsDirty();
-    this.toast(missing ? `Scene loaded (${missing} model(s) missing from your library)` : 'Scene loaded', missing ? 'error' : 'info');
+    if (!quiet || missing) this.toast(missing ? `Scene loaded (${missing} model(s) missing from your library)` : 'Scene loaded', missing ? 'error' : 'info');
   }
 
   async savePhoto(): Promise<void> {
@@ -657,6 +657,17 @@ export class App implements AppContext {
 
   // ------------------------------------------------------------------ frame loop
 
+  /** Tools + physics for one animation frame (also used by the builder's test run). */
+  simulateFrame(dt: number): void {
+    this.tools.update(dt);
+    const before = this.sim.stepCount;
+    const alpha = this.sim.advance(dt);
+    this.sim.sync(alpha);
+    const stepped = this.sim.stepCount !== before;
+    if (stepped && this.anyMotion()) this.lastMotion = performance.now();
+    if (stepped) this.pt?.markSceneDirty();
+  }
+
   private anyMotion(): boolean {
     for (const p of this.sim.parts) {
       if (p.body.isDynamic() && !p.body.isSleeping()) return true;
@@ -669,17 +680,8 @@ export class App implements AppContext {
     const dt = Math.min(this.timer.getDelta(), 0.1);
     this.fps = this.fps * 0.95 + (1 / Math.max(dt, 1e-4)) * 0.05;
 
-    if (this.mode === 'play') {
-      this.tools.update(dt);
-      const before = this.sim.stepCount;
-      const alpha = this.sim.advance(dt);
-      this.sim.sync(alpha);
-      const stepped = this.sim.stepCount !== before;
-      if (stepped && this.anyMotion()) this.lastMotion = performance.now();
-      if (stepped) this.pt?.markSceneDirty();
-    } else {
-      this.builder?.update(dt);
-    }
+    if (this.mode === 'play') this.simulateFrame(dt);
+    else this.builder?.update(dt);
 
     this.view.controls.update();
     this.flashes.update(dt);

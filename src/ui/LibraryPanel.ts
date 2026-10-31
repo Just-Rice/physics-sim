@@ -85,11 +85,12 @@ export class LibraryPanel {
     if (mine) {
       const del = h('button', { class: 'del', title: 'Delete', onclick: (e: Event) => { e.stopPropagation(); this.cb.onDelete(m); } }, '×');
       card.append(del);
-      card.addEventListener('contextmenu', (e) => {
-        e.preventDefault();
-        this.cb.onEdit(m);
-      });
     }
+    card.title = `${m.description || m.name}\nRight-click: open in the Model Builder${mine ? '' : ' (as a copy)'}`;
+    card.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      this.cb.onEdit(m);
+    });
     return card;
   }
 
@@ -110,7 +111,7 @@ export class LibraryPanel {
           'No models yet.', h('br'), 'Make one in ', h('b', {}, 'Build'), ' mode, or import a ', h('b', {}, '.glb'), ' from Blender.'));
       } else {
         this.body.append(h('div', { class: 'lib-grid' }, ...models.map((m) => this.card(m, true))));
-        this.body.append(h('div', { class: 'insp-sub', style: 'margin-top:10px' }, 'Right-click a model to edit it in the builder.'));
+        this.body.append(h('div', { class: 'insp-sub', style: 'margin-top:10px' }, 'Right-click any model to edit it in the builder.'));
       }
     }
   }
