@@ -295,11 +295,17 @@ export function fillFluid(world: ParticleWorld, def: Extract<SoftPartDef, { type
   const m = 1000 * d * d * d;
   let k = 0;
   const pts: number[] = [];
+  // Small deterministic jitter breaks the perfect lattice without making runs irreproducible.
+  let seed = (owner * 2654435761) >>> 0;
+  const rand = () => {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    return seed / 4294967296;
+  };
   for (let y = 0; y < ny && k < total; y++) for (let x = 0; x < nx && k < total; x++) for (let z = 0; z < nz && k < total; z++, k++) {
     pts.push(
-      centre.x + (x - (nx - 1) / 2) * d + (Math.random() - 0.5) * d * 0.02,
+      centre.x + (x - (nx - 1) / 2) * d + (rand() - 0.5) * d * 0.02,
       centre.y + (y - (ny - 1) / 2) * d,
-      centre.z + (z - (nz - 1) / 2) * d + (Math.random() - 0.5) * d * 0.02,
+      centre.z + (z - (nz - 1) / 2) * d + (rand() - 0.5) * d * 0.02,
     );
   }
   world.addParticles(total, (j, i) => initFluidParticle(world, i, pts[j * 3], pts[j * 3 + 1], pts[j * 3 + 2], m, def.viscosity, owner));

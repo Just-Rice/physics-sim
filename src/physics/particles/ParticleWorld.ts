@@ -725,8 +725,15 @@ export class ParticleWorld {
         const r2 = dx * dx + dy * dy + dz * dz;
         if (r2 >= H2) continue;
         const r = Math.sqrt(r2);
-        if (r < 1e-9) continue;
         const lj = f[j] & FLAG_FLUID ? lam[j] : li;
+        if (r < 1e-6) {
+          // Coincident pair: the gradient has no direction, so pick a
+          // deterministic one (opposite for i and j) and nudge them apart.
+          const a = ((i < j ? i * 7919 + j : j * 7919 + i) % 6283) / 1000;
+          const sgn = i < j ? 1 : -1;
+          ax -= Math.cos(a) * sgn * H * 0.02; az -= Math.sin(a) * sgn * H * 0.02;
+          continue;
+        }
         const s = ((li + lj) * spiky * (H - r) * (H - r)) / (r * rho0);
         ax += dx * s; ay += dy * s; az += dz * s;
       }
@@ -740,7 +747,11 @@ export class ParticleWorld {
         ax -= sw * this.wallN[i * 3]; ay -= sw * this.wallN[i * 3 + 1]; az -= sw * this.wallN[i * 3 + 2];
       }
       // λ is negative under compression, so -s pushes particles apart.
-      d[i * 3] = -ax; d[i * 3 + 1] = -ay; d[i * 3 + 2] = -az;
+      // Cap the correction so a violent impact can't fling particles away.
+      const len = Math.sqrt(ax * ax + ay * ay + az * az);
+      const maxC = this.fluidRadius * 0.25;
+      const k = len > maxC ? maxC / len : 1;
+      d[i * 3] = -ax * k; d[i * 3 + 1] = -ay * k; d[i * 3 + 2] = -az * k;
     }
   }
 
