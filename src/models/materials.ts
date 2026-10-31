@@ -119,6 +119,8 @@ export function makeThreeMaterial(spec: MaterialSpec, opts: { side?: THREE.Side;
     m.attenuationColor = new THREE.Color(spec.color);
     m.attenuationDistance = 2.5;
     m.color.set('#ffffff').lerp(new THREE.Color(spec.color), 0.35);
+    // Raster only: glass shouldn't hide other see-through things (water in a tank) behind it.
+    if (spec.transmission > 0.5) m.depthWrite = false;
   }
   m.userData.spec = spec;
   if (!opts.unique) materialCache.set(key, m);
