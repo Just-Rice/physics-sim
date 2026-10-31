@@ -121,6 +121,9 @@ export class App implements AppContext {
     this.bindSettings();
     this.platform.onMenu?.((cmd) => this.menu(cmd));
     this.platform.onWatchedFile?.((f) => this.ext.importFiles?.(this, [f], { silent: true }));
+    this.platform.watchFolder?.(false).then((folder) => {
+      if (folder) this.toast(`Blender live link: watching ${folder.replace(/^\/Users\/[^/]+/, '~')}`);
+    });
 
     this.loadScenario('sandbox');
     document.getElementById('boot')?.classList.add('hidden');

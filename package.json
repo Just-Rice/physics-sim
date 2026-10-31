@@ -19,24 +19,22 @@
     "dist:mac": "npm run build && npm run desktop:build && electron-builder --mac",
     "dist:dir": "npm run build && npm run desktop:build && electron-builder --dir"
   },
-  "dependencies": {
-    "@dimforge/rapier3d-compat": "^0.21.0",
-    "idb-keyval": "^6.3.0",
-    "lil-gui": "^0.21.0",
-    "three": "^0.187.0",
-    "three-gpu-pathtracer": "^0.0.27",
-    "three-mesh-bvh": "^0.9.17",
-    "zod": "^4.6.7"
-  },
   "devDependencies": {
+    "@dimforge/rapier3d-compat": "^0.21.0",
     "@types/node": "^22.20.5",
     "@types/three": "^0.187.0",
     "coi-serviceworker": "^0.1.7",
     "electron": "^45.2.1",
     "electron-builder": "^26.18.0",
+    "idb-keyval": "^6.3.0",
+    "lil-gui": "^0.21.0",
+    "three": "^0.187.0",
+    "three-gpu-pathtracer": "^0.0.27",
+    "three-mesh-bvh": "^0.9.17",
     "typescript": "^6.0.3",
     "vite": "^8.3.5",
-    "vitest": "^5.0.5"
+    "vitest": "^5.0.5",
+    "zod": "^4.6.7"
   },
   "homepage": "https://github.com/Just-Rice/physics-sim",
   "repository": {

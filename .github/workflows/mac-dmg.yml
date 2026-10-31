@@ -1,0 +1,61 @@
+name: Mac app (.dmg)
+
+# Builds Physics Sim.app for Apple Silicon and Intel and packages a .dmg.
+# - Run it by hand (Actions → Mac app (.dmg) → Run workflow): the .dmg is a workflow artifact.
+# - Push a tag like v0.1.0: the .dmg is also attached to a GitHub Release.
+# Signing: add the repo secrets CSC_LINK (base64 .p12 of a "Developer ID Application"
+# certificate), CSC_KEY_PASSWORD, APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD and APPLE_TEAM_ID
+# to sign and notarize. Without them the app is ad-hoc signed (see docs/MAC.md).
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  dmg:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - run: npm run desktop:build
+      - name: Build .dmg
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -n "$CSC_LINK" ]; then
+            npx electron-builder --mac --publish never -c.mac.notarize=true
+          else
+            echo "No Developer ID secrets: ad-hoc signing (first launch needs right-click → Open)."
+            export CSC_IDENTITY_AUTO_DISCOVERY=false
+            npx electron-builder --mac --publish never -c.mac.identity=-
+          fi
+      - name: Check the app bundle signature
+        run: |
+          APP=$(find release -maxdepth 2 -name "Physics Sim.app" | head -1)
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          ls -lh release/*.dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Physics-Sim-macOS
+          path: release/*.dmg
+          if-no-files-found: error
+      - name: Attach to a GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --title "Physics Sim $GITHUB_REF_NAME" --generate-notes
+          gh release upload "$GITHUB_REF_NAME" release/*.dmg --clobber
