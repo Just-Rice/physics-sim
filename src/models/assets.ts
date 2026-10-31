@@ -51,13 +51,17 @@ function findNode(root: THREE.Object3D, node?: string): THREE.Object3D | undefin
   return root.getObjectByName(node);
 }
 
-/** Clone of an asset (or one node of it) with the node's own transform reset to identity. */
+/**
+ * Clone of an asset (or one node of it) with the node's own transform reset to
+ * identity. A named mesh node is cloned without its children: imported models
+ * reference every mesh as its own shape.
+ */
 export function cloneAssetNode(id: string, node?: string): THREE.Object3D | null {
   const a = assets.get(id);
   if (!a) return null;
   const src = findNode(a.root, node);
   if (!src) return null;
-  const clone = src.clone(true);
+  const clone = src.clone(!(node && (src as THREE.Mesh).isMesh));
   clone.position.set(0, 0, 0);
   clone.quaternion.identity();
   clone.scale.set(1, 1, 1);
@@ -79,7 +83,7 @@ function nodeRoot(id: string, node?: string): THREE.Object3D | null {
   const src = findNode(a.root, node);
   if (!src) return null;
   // Evaluate geometry in the node's own frame.
-  const holder = src.clone(true);
+  const holder = src.clone(!(node && (src as THREE.Mesh).isMesh));
   holder.position.set(0, 0, 0);
   holder.quaternion.identity();
   holder.scale.set(1, 1, 1);

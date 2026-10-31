@@ -9,6 +9,7 @@ import { addEmitter, buildCloth, buildSoftBody, fillFluid, initFluidParticle, ty
 import { placementMatrix } from '../../models/instantiate';
 import { makeThreeMaterial, resolveMaterial } from '../../models/materials';
 import { FluidRenderer } from '../../render/fluidSurface';
+import { ParticleThreads, autoThreadCount, canUseThreads } from './scheduler';
 import type { SoftPartDef } from '../../models/schema';
 
 /** Something that can advance the particle world: inline (this thread) or a worker. */
@@ -39,7 +40,8 @@ const trimeshCache = new WeakMap<Float32Array, TrimeshData>();
  * shape, feeds reaction impulses back to Rapier, and draws the results.
  */
 export class ParticlePlugin implements SimPlugin, ParticleTools {
-  readonly world = new ParticleWorld();
+  readonly world = new ParticleWorld(8192, canUseThreads());
+  private threads: ParticleThreads | null = null;
   readonly group = new THREE.Group();
   readonly fluid = new FluidRenderer();
   private proxies = new ProxySet();
@@ -60,7 +62,26 @@ export class ParticlePlugin implements SimPlugin, ParticleTools {
     settings.on((p) => {
       if (p === 'particles.fluidRadius') this.world.setFluidRadius(settings.data.particles.fluidRadius);
       if (p === 'particles.fluidRender') this.fluid.mode = settings.data.particles.fluidRender;
+      if (p === 'particles.threads') this.configureThreads();
     });
+    this.configureThreads();
+  }
+
+  /** Number of threads in use (1 = single-threaded). */
+  get threadCount(): number {
+    return this.threads?.active ? this.threads.threads : 1;
+  }
+
+  private configureThreads(): void {
+    this.threads?.stop();
+    this.threads = null;
+    this.world.parallel = null;
+    if (!this.world.shared) return;
+    const want = this.settings.data.particles.threads || autoThreadCount();
+    if (want < 2) return;
+    this.threads = new ParticleThreads(want);
+    this.threads.prewarm(this.world);
+    this.world.parallel = this.threads;
   }
 
   private get maxParticles(): number {

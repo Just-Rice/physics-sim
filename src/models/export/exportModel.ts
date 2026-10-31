@@ -25,7 +25,7 @@ function shapeObject(shape: ShapeDef, name: string, materialRef: unknown): THREE
   obj.quaternion.copy(quatFromDeg(shape.rotation));
   obj.userData = {
     ps_shape: JSON.stringify(shape),
-    ps_collider: shape.type === 'mesh' ? shape.collider : shape.type,
+    ...(shape.type === 'mesh' ? { ps_collider: shape.collider } : {}),
     ...(shape.collide ? {} : { ps_collide: false }),
   };
   return obj;

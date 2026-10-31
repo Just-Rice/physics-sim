@@ -29,7 +29,7 @@ export interface AppExtensions {
   /** Model Builder mode. */
   createBuilder?(app: App): { enter(model?: ModelDef): void; exit(): void; update(dt: number): void; readonly el: HTMLElement[] } | null;
   /** File import (meshes and model JSON). */
-  importFiles?(app: App, files: PickedFile[]): Promise<void>;
+  importFiles?(app: App, files: PickedFile[], opts?: { silent?: boolean }): Promise<void>;
   /** Load stored mesh assets for the library. */
   assetLoader?: ModelLibrary['assetLoader'];
   exportModel?(app: App, model: ModelDef): Promise<void>;
@@ -120,7 +120,7 @@ export class App implements AppContext {
     this.bindDrop();
     this.bindSettings();
     this.platform.onMenu?.((cmd) => this.menu(cmd));
-    this.platform.onWatchedFile?.((f) => this.ext.importFiles?.(this, [f]));
+    this.platform.onWatchedFile?.((f) => this.ext.importFiles?.(this, [f], { silent: true }));
 
     this.loadScenario('sandbox');
     document.getElementById('boot')?.classList.add('hidden');
@@ -510,6 +510,28 @@ export class App implements AppContext {
     this.pt?.markSceneDirty();
     this.lastMotion = performance.now();
     return e;
+  }
+
+  /** Swap every placed copy of a model for its new definition (hot reload). */
+  replaceModelInstances(model: ModelDef): void {
+    const olds = this.sim.entities.filter((e) => e.model.id === model.id);
+    for (const e of olds) {
+      const placement = { ...e.placement };
+      const first = e.parts[0];
+      if (first) {
+        // Keep it roughly where it is now.
+        const t = first.body.translation();
+        const d = first.def.position;
+        placement.position = [t.x - d[0], t.y - d[1], t.z - d[2]];
+      }
+      this.removeEntity(e);
+      this.sim.spawn(model, { ...placement, model: model.id });
+    }
+    if (olds.length) {
+      this.sim.sync(1);
+      this.pt?.markSceneDirty();
+      this.pt?.markMaterialsDirty();
+    }
   }
 
   removeEntity(e: Entity): void {

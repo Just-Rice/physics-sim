@@ -84,6 +84,23 @@ export interface StepOptions {
   bodyCom: Float32Array;
 }
 
+/** Kernels that can run in parallel over particle ranges. */
+export const enum Kernel {
+  Neighbors = 1,
+  Lambda = 2,
+  Delta = 3,
+  Contacts = 4,
+  Viscosity = 5,
+}
+
+/** Runs a kernel over [0, n) across threads; returns false to fall back to inline. */
+export interface ParallelExec {
+  run(world: ParticleWorld, kernel: Kernel, n: number): boolean;
+}
+
+/** Names of the arrays a worker needs to share (see particleWorker.ts). */
+export const SHARED_ARRAYS = ['pos', 'vel', 'invMass', 'radius', 'phase', 'flags', 'viscosity', 'lambda', 'delta', 'neighbors', 'nCount', 'cellStart', 'sorted', 'wallD', 'wallN'] as const;
+
 function nextPow2(n: number): number {
   let p = 1;
   while (p < n) p <<= 1;
@@ -114,8 +131,8 @@ export class ParticleWorld {
   neighbors = new Int32Array(0);
   nCount = new Int32Array(0);
   private cellOf = new Int32Array(0);
-  private sorted = new Int32Array(0);
-  private cellStart = new Int32Array(0);
+  sorted = new Int32Array(0);
+  cellStart = new Int32Array(0);
   private tableSize = 0;
   private cursor = new Int32Array(0);
 
@@ -151,9 +168,58 @@ export class ParticleWorld {
   private nScratch = new Float64Array(3);
   private rand = 12345;
 
-  constructor(capacity = 4096) {
+  /** Arrays live on SharedArrayBuffers so worker threads can read and write them. */
+  readonly shared: boolean;
+  /** Incremented whenever arrays are reallocated (workers must rebind). */
+  epoch = 0;
+  parallel: ParallelExec | null = null;
+  /** Below this many particles the thread sync costs more than it saves. */
+  parallelThreshold = 1200;
+
+  constructor(capacity = 4096, shared = false) {
+    this.shared = shared && typeof SharedArrayBuffer !== 'undefined';
     this.ensureCapacity(capacity);
     this.setFluidRadius(0.04);
+  }
+
+  private alloc<T extends Float32Array | Int32Array | Uint8Array | Uint16Array>(Ctor: { new (b: ArrayBufferLike): T; new (n: number): T; BYTES_PER_ELEMENT: number }, n: number): T {
+    if (!this.shared) return new Ctor(n);
+    return new Ctor(new SharedArrayBuffer(Math.max(1, n) * Ctor.BYTES_PER_ELEMENT));
+  }
+
+  /** Parameters workers need besides the shared arrays. */
+  kernelParams(): number[] {
+    return [this.count, this.H, this.poly6, this.spiky, this.rho0, this.epsilon, this.tableSize, ...this.wallRho, ...this.wallGrad];
+  }
+
+  setKernelParams(p: Float64Array | number[]): void {
+    this.count = p[0];
+    this.H = p[1];
+    this.poly6 = p[2];
+    this.spiky = p[3];
+    this.rho0 = p[4];
+    this.epsilon = p[5];
+    this.tableSize = p[6];
+    for (let i = 0; i < 33; i++) {
+      this.wallRho[i] = p[7 + i];
+      this.wallGrad[i] = p[40 + i];
+    }
+  }
+
+  /** Run a kernel inline over [from, to). */
+  runKernel(k: Kernel, from: number, to: number): void {
+    switch (k) {
+      case Kernel.Neighbors: this.findNeighbors(from, to); break;
+      case Kernel.Lambda: this.fluidLambda(from, to); break;
+      case Kernel.Delta: this.fluidDelta(from, to); break;
+      case Kernel.Contacts: this.contacts(from, to); break;
+      case Kernel.Viscosity: this.viscosityKernel(from, to); break;
+    }
+  }
+
+  private par(k: Kernel, n: number): void {
+    if (this.parallel && n >= this.parallelThreshold && this.parallel.run(this, k, n)) return;
+    this.runKernel(k, 0, n);
   }
 
   private random(): number {
@@ -214,7 +280,7 @@ export class ParticleWorld {
     if (n <= this.capacity) return;
     const cap = Math.max(n, Math.ceil(this.capacity * 1.5), 1024);
     const grow = <T extends Float32Array | Int32Array | Uint8Array | Uint16Array>(a: T, size: number): T => {
-      const b = new (a.constructor as new (n: number) => T)(size);
+      const b = this.alloc(a.constructor as never, size) as T;
       b.set(a.subarray(0, Math.min(a.length, size)) as never);
       return b;
     };
@@ -229,16 +295,19 @@ export class ParticleWorld {
     this.flags = grow(this.flags, cap);
     this.viscosity = grow(this.viscosity, cap);
     this.owner = grow(this.owner, cap);
-    this.lambda = new Float32Array(cap);
-    this.wallD = new Float32Array(cap).fill(1e9);
-    this.wallN = new Float32Array(cap * 3);
-    this.delta = new Float32Array(cap * 3);
+    this.lambda = this.alloc(Float32Array, cap);
+    this.wallD = this.alloc(Float32Array, cap).fill(1e9);
+    this.wallN = this.alloc(Float32Array, cap * 3);
+    this.delta = this.alloc(Float32Array, cap * 3);
     this.deltaCount = new Uint16Array(cap);
-    this.neighbors = new Int32Array(cap * MAX_NEIGHBORS);
-    this.nCount = new Int32Array(cap);
+    this.neighbors = this.alloc(Int32Array, cap * MAX_NEIGHBORS);
+    this.nCount = this.alloc(Int32Array, cap);
     this.cellOf = new Int32Array(cap);
-    this.sorted = new Int32Array(cap);
+    this.sorted = this.alloc(Int32Array, cap);
+    // Hash table sized for the full capacity so it never needs reallocating mid-run.
+    this.cellStart = this.alloc(Int32Array, nextPow2(Math.max(64, cap * 2)) + 1);
     this.capacity = cap;
+    this.epoch++;
   }
 
   private ensureConstraints(n: number): void {
@@ -416,12 +485,9 @@ export class ParticleWorld {
   buildNeighbors(): void {
     const n = this.count;
     const ts = nextPow2(Math.max(64, n * 2));
-    if (ts !== this.tableSize) {
-      this.tableSize = ts;
-      this.cellStart = new Int32Array(ts + 1);
-    }
+    this.tableSize = ts;
     const cs = this.cellStart;
-    cs.fill(0);
+    cs.fill(0, 0, ts + 1);
     const H = this.H;
     const inv = 1 / H;
     const p = this.pos;
@@ -438,7 +504,7 @@ export class ParticleWorld {
       const h = this.cellOf[i];
       this.sorted[cs[h] + cursor[h]++] = i;
     }
-    this.findNeighbors(0, n);
+    this.par(Kernel.Neighbors, n);
   }
 
   /** Neighbour lists for particles [from, to). Independent per particle. */
@@ -1015,18 +1081,18 @@ export class ParticleWorld {
       }
       if (this.fluidCount > 0) {
         for (let it = 0; it < opt.fluidIterations; it++) {
-          this.fluidLambda(0, n);
-          this.fluidDelta(0, n);
+          this.par(Kernel.Lambda, n);
+          this.par(Kernel.Delta, n);
           this.applyFluidDelta(0, n);
         }
       }
-      this.contacts(0, n);
+      this.par(Kernel.Contacts, n);
       this.applyContactDelta(0, n);
       this.collide(0, n, opt, h, this.activeBuf, activeCount);
       this.applyGrabs();
       this.finalize(0, n, h, 0.4);
       if (this.fluidCount > 0) {
-        this.viscosityKernel(0, n);
+        this.par(Kernel.Viscosity, n);
         this.applyViscosity(0, n);
       }
     }

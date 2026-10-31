@@ -202,6 +202,10 @@ export const ModelDef = z.object({
   parts: z.array(PartDef).default([]),
   joints: z.array(JointDef).default([]),
   softParts: z.array(SoftPartDef).default([]),
+  /** Original file name for imported models (used to hot-reload Blender exports). */
+  source: z.string().optional(),
+  /** Options used when importing, reused on hot reload. */
+  importOptions: z.record(z.string(), z.unknown()).optional(),
 });
 export type ModelDef = z.infer<typeof ModelDef>;
 /** Loosely typed input form (defaults not yet applied) used when authoring models in code. */
