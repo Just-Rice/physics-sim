@@ -803,7 +803,7 @@ export class ParticleWorld {
 
   /** Collide particles [from, to) with proxies and the ground. Accumulates reaction impulses. */
   collide(from: number, to: number, opt: StepOptions, h: number, active: Int32Array, activeCount: number): void {
-    const p = this.pos, pr = this.prev, w = this.invMass, r = this.radius, m = this.mass, fr = this.friction, fl = this.flags;
+    const p = this.pos, pr = this.prev, w = this.invMass, r = this.radius, fr = this.friction, fl = this.flags;
     const set = opt.proxies, data = set.data, imp = opt.impulses, com = opt.bodyCom;
     const n = this.nScratch;
     const invH = 1 / h;

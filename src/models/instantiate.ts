@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { RAPIER } from '../physics/RigidWorld';
-import type { Entity, PartInstance, ProxyShape, ShapeInstance } from '../sim/types';
+import type { Entity, PartInstance, ProxyShape } from '../sim/types';
 import type { JointDef, MaterialRef, MaterialSpec, ModelDef, PartDef, PlacementDef, ShapeDef } from './schema';
 import { makeThreeMaterial, resolveMaterial } from './materials';
 import { boxRounding, capsuleMiddle, computeHull, primitiveGeometry, quatFromDeg, DEG } from './geometry';
