@@ -1,8 +1,9 @@
 import * as THREE from 'three';
-import { Tool, type ToolPointer } from './Tool';
+import { Tool, type HoverInfo, type ToolPointer } from './Tool';
 import { icons } from '../ui/icons';
 import { explode } from '../physics/fields';
 import { modelBounds } from '../models/bounds';
+import type { PickResult } from '../app/context';
 
 function cameraYaw(camera: THREE.Camera): number {
   const d = new THREE.Vector3();
@@ -14,12 +15,13 @@ function cameraYaw(camera: THREE.Camera): number {
 /** Click on the ground or on objects to place the selected library model. */
 export class SpawnTool extends Tool {
   readonly id = 'spawn';
-  readonly label = 'Spawn';
+  readonly label = 'Place';
   readonly icon = icons.spawn;
   readonly key = '2';
+  readonly description = 'Place the model picked in the library';
   get hint(): string {
     const m = this.ctx.library.get(this.modelId);
-    return `Click to place “${m?.name ?? this.modelId}” · pick another model in the library · hold Shift to drop from higher`;
+    return `Click to place “${m?.name ?? this.modelId}” · pick a different model in the library · Shift = drop from higher · Esc = done`;
   }
   modelId = 'crate';
   private ghost: THREE.LineSegments;
@@ -29,16 +31,16 @@ export class SpawnTool extends Tool {
     super(ctx);
     this.ghost = new THREE.LineSegments(
       new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1)),
-      new THREE.LineBasicMaterial({ color: 0x40c4ff, transparent: true, opacity: 0.7 }),
+      new THREE.LineBasicMaterial({ color: 0x40c4ff, transparent: true, opacity: 0.8 }),
     );
     this.ghost.visible = false;
     ctx.view.helpers.add(this.ghost);
   }
 
-  private placement(p: ToolPointer): { pos: THREE.Vector3; yaw: number; size: THREE.Vector3 } | null {
+  private placement(p: ToolPointer, modelId = this.modelId): { pos: THREE.Vector3; yaw: number; size: THREE.Vector3; center: THREE.Vector3 } | null {
     const hit = this.ctx.pick(p.x, p.y);
     if (!hit) return null;
-    const model = this.ctx.library.get(this.modelId);
+    const model = this.ctx.library.get(modelId);
     if (!model) return null;
     const b = modelBounds(model);
     const size = b.getSize(new THREE.Vector3());
@@ -46,40 +48,61 @@ export class SpawnTool extends Tool {
     const lift = (p.shift ? 2 : 0) + this.ctx.settings.data.tools.spawnHeight * 0.05 + 0.002;
     const pos = hit.point.clone();
     pos.y = hit.point.y - b.min.y + lift;
+    // Placing against a wall or the side of an object: step out so it doesn't start inside it.
     if (hit.normal.y < 0.5 && !hit.isGround) pos.addScaledVector(hit.normal, Math.max(size.x, size.z) * 0.5);
-    return { pos, yaw, size };
+    return { pos, yaw, size, center: b.getCenter(new THREE.Vector3()) };
   }
 
-  override onMove(p: ToolPointer): void {
-    this.lastPointer = p;
-    const pl = this.placement(p);
+  /** Show the placement outline for `modelId` at a screen point (also used while dragging from the library). */
+  previewAt(p: ToolPointer, modelId = this.modelId): void {
+    const pl = this.placement(p, modelId);
     if (!pl) {
       this.ghost.visible = false;
       return;
     }
-    const model = this.ctx.library.get(this.modelId)!;
-    const b = modelBounds(model);
-    const c = b.getCenter(new THREE.Vector3());
     this.ghost.visible = true;
     this.ghost.scale.copy(pl.size).max(new THREE.Vector3(0.02, 0.02, 0.02));
     this.ghost.rotation.set(0, pl.yaw * (Math.PI / 180), 0);
-    this.ghost.position.copy(pl.pos).add(c.applyEuler(this.ghost.rotation));
+    this.ghost.position.copy(pl.pos).add(pl.center.applyEuler(this.ghost.rotation));
+  }
+
+  hidePreview(): void {
+    this.ghost.visible = false;
+  }
+
+  /** Place `modelId` at a screen point. */
+  placeAt(p: ToolPointer, modelId = this.modelId): boolean {
+    const pl = this.placement(p, modelId);
+    if (!pl) return false;
+    return !!this.ctx.spawnModel(modelId, pl.pos, { yaw: pl.yaw });
+  }
+
+  override hover(): HoverInfo {
+    return { cursor: 'copy' };
+  }
+
+  override get activeCursor(): string {
+    return 'copy';
+  }
+
+  override onMove(p: ToolPointer): void {
+    this.lastPointer = p;
+    this.previewAt(p);
   }
 
   override onDown(p: ToolPointer): boolean {
     if (p.button !== 0) return false;
-    const pl = this.placement(p);
-    if (!pl) return false;
-    const e = this.ctx.spawnModel(this.modelId, pl.pos, { yaw: pl.yaw });
-    return !!e;
+    return this.placeAt(p);
   }
 
   override deactivate(): void {
     this.ghost.visible = false;
+    this.lastPointer = null;
   }
 
   override update(): void {
-    if (this.lastPointer && this.ghost.visible) this.onMove(this.lastPointer);
+    // The scene moves under a still cursor (things fall, the camera orbits): keep the outline honest.
+    if (this.lastPointer && this.ghost.visible) this.previewAt(this.lastPointer);
   }
 }
 
@@ -89,7 +112,11 @@ export class CannonTool extends Tool {
   readonly label = 'Cannon';
   readonly icon = icons.cannon;
   readonly key = '3';
-  readonly hint = 'Click to fire · hold for rapid fire · projectile and speed are in Settings → Tools';
+  readonly description = 'Fire balls (or anything) from the camera';
+  get hint(): string {
+    const m = this.ctx.library.get(this.ctx.settings.data.tools.cannonModel);
+    return `Click to fire a ${m?.name.toLowerCase() ?? 'ball'} · hold for rapid fire · change the projectile in Settings → Quick`;
+  }
   private firing = false;
   private pointer: ToolPointer | null = null;
   private cooldown = 0;
@@ -130,12 +157,14 @@ export class ExplodeTool extends Tool {
   readonly label = 'Explode';
   readonly icon = icons.explode;
   readonly key = '4';
-  readonly hint = 'Click to detonate · strength and radius are in Settings → Tools';
+  readonly description = 'Blast everything near the click outwards';
+  readonly hint = 'Click to set off an explosion · strength and radius are in Settings → Advanced → Tools';
 
   override onDown(p: ToolPointer): boolean {
     if (p.button !== 0) return false;
     const hit = this.ctx.pick(p.x, p.y);
     if (!hit) return false;
+    this.ctx.checkpoint('explode', 600);
     const t = this.ctx.settings.data.tools;
     const c = hit.point.clone().addScaledVector(hit.normal, 0.15);
     explode(this.ctx.sim.parts, c.x, c.y, c.z, t.explodeStrength, t.explodeRadius);
@@ -151,7 +180,8 @@ export class AttractTool extends Tool {
   readonly label = 'Attract';
   readonly icon = icons.attract;
   readonly key = '5';
-  readonly hint = 'Hold to pull objects towards the cursor · Shift-hold to push them away';
+  readonly description = 'Hold to pull things towards the cursor (Shift pushes)';
+  readonly hint = 'Hold the mouse button to pull things towards the cursor · Shift + hold pushes them away · scroll to reach further';
   private active = false;
   private repel = false;
   private target = new THREE.Vector3();
@@ -172,6 +202,7 @@ export class AttractTool extends Tool {
 
   override onDown(p: ToolPointer): boolean {
     if (p.button !== 0) return false;
+    this.ctx.checkpoint('attract', 1500);
     const hit = this.ctx.pick(p.x, p.y);
     const ray = this.ctx.ray(p.x, p.y);
     this.distance = hit ? Math.min(hit.distance, 25) : 6;
@@ -179,6 +210,7 @@ export class AttractTool extends Tool {
     this.active = true;
     this.repel = p.shift;
     this.ring.visible = true;
+    this.removeForce?.();
     const fn = (dt: number) => this.applyForce(dt);
     this.ctx.sim.stepForces.push(fn);
     this.removeForce = () => {
@@ -247,7 +279,18 @@ export class EraseTool extends Tool {
   readonly label = 'Erase';
   readonly icon = icons.erase;
   readonly key = '6';
-  readonly hint = 'Click an object to delete it (the whole model it belongs to)';
+  readonly description = 'Click something to delete it (Ctrl/⌘ + Z brings it back)';
+  readonly hint = 'Click an object to delete it · Ctrl/⌘ + Z to undo';
+
+  override hover(hit: PickResult | null): HoverInfo {
+    const entity = hit?.part?.entity ?? hit?.soft?.entity;
+    if (!entity || entity.locked) return { cursor: 'not-allowed', hint: 'Nothing to erase here' };
+    return { cursor: 'pointer', hint: `Click to delete the ${entity.name.toLowerCase()}`, highlight: hit?.part ?? null, highlightColor: 0xff5d5d };
+  }
+
+  override get activeCursor(): string {
+    return 'pointer';
+  }
 
   override onDown(p: ToolPointer): boolean {
     if (p.button !== 0) return false;
@@ -255,7 +298,7 @@ export class EraseTool extends Tool {
     if (!hit) return false;
     const entity = hit.part?.entity ?? hit.soft?.entity;
     if (!entity || entity.locked) return false;
-    this.ctx.removeEntity(entity);
+    this.ctx.deleteEntity(entity);
     return true;
   }
 }

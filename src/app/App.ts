@@ -1,6 +1,7 @@
 import * as THREE from 'three';
-import { SettingsStore, defaultSettings, type Settings } from './settings';
+import { SettingsStore, defaultSettings, RT_PRESETS, currentRtQuality, type RtQuality, type Settings } from './settings';
 import type { AppContext, ParticleTools, PickResult } from './context';
+import { History } from './history';
 import { initRapier, RAPIER } from '../physics/RigidWorld';
 import { Simulation } from '../sim/Simulation';
 import { RasterRenderer } from '../render/RasterRenderer';
@@ -12,22 +13,28 @@ import { registerProceduralAssets } from '../models/assets';
 import type { ModelDef } from '../models/schema';
 import type { Entity, PartInstance } from '../sim/types';
 import { ToolManager } from '../tools/ToolManager';
+import type { ToolPointer } from '../tools/Tool';
 import { TopBar } from '../ui/TopBar';
-import { LibraryPanel } from '../ui/LibraryPanel';
+import { LibraryPanel, MODEL_DRAG_TYPE } from '../ui/LibraryPanel';
 import { BottomBar } from '../ui/BottomBar';
 import { Inspector } from '../ui/Inspector';
 import { SettingsPanel } from '../ui/SettingsPanel';
-import { Toasts, h } from '../ui/dom';
+import { Toasts, confirmDialog, h, svgIcon } from '../ui/dom';
+import { icons } from '../ui/icons';
 import { showHelp } from '../ui/help';
+import { maybeShowWelcome, startTour, type TourStep } from '../ui/onboarding';
+import { showScenePicker } from '../ui/ScenePicker';
 import { SCENARIOS, type Scenario } from '../scenes/scenarios';
-import { isSavedScene, resolveSavedModel, serializeScene } from '../scenes/sceneIO';
+import { isSavedScene, resolveSavedModel, serializeScene, type SavedScene } from '../scenes/sceneIO';
 import { detectPlatform, type MenuCommand, type Platform, type PickedFile } from '../platform';
+
+export type ParticlesApi = ParticleTools & { count(): number; active(): boolean; reset(): void };
 
 export interface AppExtensions {
   /** Particle physics plugin (cloth, soft bodies, fluids). */
-  createParticles?(app: App): (ParticleTools & { count(): number; active(): boolean; reset(): void }) | null;
+  createParticles?(app: App): ParticlesApi | null;
   /** Model Builder mode. */
-  createBuilder?(app: App): { enter(model?: ModelDef): void; exit(): void; update(dt: number): void; readonly el: HTMLElement[] } | null;
+  createBuilder?(app: App): { enter(model?: ModelDef): void; exit(): void; update(dt: number): void; stopTest(): void; exportMenu(): void; readonly el: HTMLElement[] } | null;
   /** File import (meshes and model JSON). */
   importFiles?(app: App, files: PickedFile[], opts?: { silent?: boolean }): Promise<void>;
   /** Load stored mesh assets for the library. */
@@ -35,13 +42,27 @@ export interface AppExtensions {
   exportModel?(app: App, model: ModelDef): Promise<void>;
 }
 
+const UNDO_LABELS: Record<string, string> = {
+  add: 'adding objects',
+  delete: 'delete',
+  explode: 'explosion',
+  attract: 'attract',
+  grab: 'moving things',
+  clear: 'clear',
+  edit: 'edit',
+  scene: 'scene change',
+  reset: 'reset',
+  duplicate: 'duplicate',
+};
+
 export class App implements AppContext {
   readonly settings: SettingsStore;
   readonly platform: Platform;
   readonly library = new ModelLibrary();
+  readonly history = new History(30);
   view!: RasterRenderer;
   sim!: Simulation;
-  particles: (ParticleTools & { count(): number; active(): boolean; reset(): void }) | null = null;
+  particles: ParticlesApi | null = null;
   selected: PartInstance | null = null;
   tools!: ToolManager;
   pt: PathTracer | null = null;
@@ -61,11 +82,23 @@ export class App implements AppContext {
   private rtBadge!: HTMLElement;
   private rtBar!: HTMLElement;
   private rtText!: HTMLElement;
+  private rtStill!: HTMLButtonElement;
+  private rtSave!: HTMLButtonElement;
+  private rtQuality!: HTMLSelectElement;
   private hintEl!: HTMLElement;
+  private pausedEl!: HTMLElement;
   private timer = new THREE.Timer();
   private fps = 60;
   private photoRequest: { samples: number; resolve: () => void } | null = null;
   private lastMotion = 0;
+  private lastStats = 0;
+  private draggingModel: string | null = null;
+  private softRestartNoted = false;
+  /** What "Reset" returns to: a scenario, or the last scene file that was opened. */
+  private resetPoint: SavedScene | null = null;
+  private libraryWasOpen = true;
+  /** The Builder's Test run is going: Play-style tools and time controls apply. */
+  private builderTesting = false;
   mode: 'play' | 'build' = 'play';
   builder: ReturnType<NonNullable<AppExtensions['createBuilder']>> = null;
   scenario: Scenario = SCENARIOS[0];
@@ -124,13 +157,17 @@ export class App implements AppContext {
     this.platform.watchFolder?.(false).then((folder) => {
       if (folder) this.toast(`Blender live link: watching ${folder.replace(/^\/Users\/[^/]+/, '~')}`);
     });
+    document.addEventListener('physics-sim:build', () => this.setMode('build'));
 
-    this.loadScenario('sandbox');
+    this.loadScenario('sandbox', false);
+    // On a phone the library is a full-screen sheet: start with the scene visible.
+    if (this.narrow) this.toggleLibrary(false);
     document.getElementById('boot')?.classList.add('hidden');
     setTimeout(() => document.getElementById('boot')?.remove(), 600);
     this.view.renderer.setAnimationLoop(() => this.frame());
     // Exposed for debugging and automated smoke tests.
     (window as unknown as { physicsApp: App }).physicsApp = this;
+    if (!new URLSearchParams(location.search).has('notour')) setTimeout(() => maybeShowWelcome(() => this.tourSteps()), 700);
   }
 
   // ------------------------------------------------------------------ UI
@@ -138,25 +175,22 @@ export class App implements AppContext {
   private buildUI(): void {
     const ui = document.getElementById('ui')!;
     this.topbar = new TopBar(this.tools, {
-      onScenario: (id) => this.loadScenario(id),
+      onOpenScenes: () => this.openScenes(),
       onMode: (m) => this.setMode(m),
       onRayTracing: (on) => this.setRayTracing(on),
       onToggleSettings: () => this.toggleSettings(),
       onToggleLibrary: () => this.toggleLibrary(),
-      onHelp: () => showHelp(this.platform.kind),
+      onHelp: () => this.showHelp(),
     });
     if (this.ptUnsupported) this.topbar.setRayTracingUnavailable(this.ptUnsupported);
 
     this.libraryPanel = new LibraryPanel(this.library, this.thumbs, {
-      onPick: (m) => {
-        this.tools.spawn.modelId = m.id;
-        this.tools.setTool('spawn');
-        this.libraryPanel.setActive(m.id);
-        this.updateHint();
-      },
+      onPick: (m) => this.armSpawn(m.id),
+      onQuickAdd: (m) => this.dropInView(m.id),
       onImport: () => this.openImport(),
       onDelete: async (m) => {
-        if (!confirm(`Delete “${m.name}” from your library?`)) return;
+        const ok = await confirmDialog(`Delete “${m.name}”?`, 'It will be removed from My models. Copies already in the scene stay until you clear them.', { confirm: 'Delete', danger: true });
+        if (!ok) return;
         await this.library.deleteUserModel(m.id);
         this.toast(`Deleted ${m.name}`);
       },
@@ -165,91 +199,169 @@ export class App implements AppContext {
         this.builder?.enter(m);
       },
       onExport: (m) => this.ext.exportModel?.(this, m),
+      onClose: () => this.toggleLibrary(false),
     });
     this.libraryPanel.setActive(this.tools.spawn.modelId);
+    this.libraryPanel.el.addEventListener('dragstart', (e) => {
+      const id = (e.target as HTMLElement).closest<HTMLElement>('.lib-card')?.dataset.id;
+      this.draggingModel = id ?? null;
+    });
+    this.libraryPanel.el.addEventListener('dragend', () => {
+      this.draggingModel = null;
+      this.tools.spawn.hidePreview();
+    });
 
     this.bottombar = new BottomBar(this.settings, {
       onTogglePause: () => this.togglePause(),
       onStep: () => this.stepOnce(),
-      onReset: () => this.loadScenario(this.scenario.id),
+      onUndo: () => this.undo(),
+      onRedo: () => this.redo(),
+      onReset: () => this.resetScene(),
       onClear: () => this.clearScene(),
       onPhoto: () => this.savePhoto(),
     });
+    this.history.onChange(() => this.syncHistoryUi());
 
     this.inspector = new Inspector({
-      onDelete: (p) => this.removeEntity(p.entity),
+      onDelete: (p) => this.deleteEntity(p.entity),
+      onDuplicate: (p) => this.duplicate(p.entity),
       onFocus: (p) => this.focusOn(p.object),
       onClose: () => this.select(null),
+      onBeforeEdit: () => this.checkpoint('edit', 1200),
+      onMaterialChanged: () => this.pt?.markMaterialsDirty(),
     });
-    this.inspector.onMaterialChanged = () => this.pt?.markMaterialsDirty();
 
     this.settingsPanel = new SettingsPanel(this.settings, {
       onWatchFolder: this.platform.watchFolder ? () => this.chooseWatchFolder() : undefined,
       onPhoto: () => this.savePhoto(),
-      onSaveScene: () => this.saveScene(),
-      onLoadScene: () => this.loadSceneFile(),
+      onClose: () => this.toggleSettings(false),
+      onHelp: () => this.showHelp(),
     });
 
+    // Ray-tracing status badge
     this.rtBar = h('i');
-    this.rtText = h('span');
-    this.rtBadge = h('div', { class: 'rt-badge panel' }, this.rtText, h('div', { class: 'bar' }, this.rtBar));
-    this.hintEl = h('div', { class: 'hint panel' });
+    this.rtText = h('span', { class: 'rt-text' });
+    this.rtStill = h('button', { class: 'btn small', title: 'Pause and let the picture sharpen', onclick: () => this.renderStill() }, 'Render still');
+    this.rtSave = h('button', { class: 'btn small', title: 'Save this picture (P)', onclick: () => this.savePhoto() }, svgIcon(icons.camera), 'Save');
+    this.rtQuality = h('select', { class: 'select small', title: 'Ray-tracing quality', 'aria-label': 'Ray-tracing quality' },
+      ...(Object.keys(RT_PRESETS) as RtQuality[]).map((k) => h('option', { value: k }, RT_PRESETS[k].label)),
+      h('option', { value: 'custom', disabled: true }, 'Custom'));
+    this.rtQuality.addEventListener('change', () => this.settings.applyRtQuality(this.rtQuality.value as RtQuality));
+    this.rtQuality.addEventListener('keydown', (e) => e.stopPropagation());
+    this.rtBadge = h('div', { class: 'rt-badge panel', role: 'status' }, this.rtText, h('div', { class: 'bar' }, this.rtBar), this.rtStill, this.rtSave, this.rtQuality);
+
+    this.hintEl = h('div', { class: 'hint panel', role: 'status' });
+    this.pausedEl = h('button', { class: 'paused-pill panel', title: 'Resume (Space)', onclick: () => this.togglePause() },
+      svgIcon(icons.play), h('span', {}, 'Paused'), h('span', { class: 'insp-sub' }, 'Space to resume'));
 
     const rightCol = h('div', { class: 'right-col' }, this.inspector.el, this.settingsPanel.el);
-    ui.append(this.topbar.el, this.libraryPanel.el, this.bottombar.el, rightCol, this.rtBadge, this.hintEl, this.toasts.el,
+    ui.append(this.topbar.el, this.libraryPanel.el, this.bottombar.el, rightCol, this.rtBadge, this.pausedEl, this.hintEl, this.toasts.el,
       h('div', { class: 'drop-overlay', id: 'drop-overlay' }, 'Drop to import'));
     this.tools.onChange(() => this.updateHint());
+    this.tools.onHover((info) => this.updateHint(info?.hint));
     this.updateHint();
+    this.syncHistoryUi();
+    this.syncPausedUi();
   }
 
-  private updateHint(): void {
-    if (this.mode === 'build') {
+  private tourSteps(): TourStep[] {
+    return [
+      { target: '.library', title: 'Add things', text: 'Drag any model into the scene. Or click one, then click where it should go. Double-click drops it in the middle of the view.', before: () => this.toggleLibrary(true) },
+      { target: '.toolbar', title: 'Tools', text: 'Hand grabs and throws (drag an object). Place puts down library models. Cannon fires, Explode blasts, Attract pulls, Erase removes. Keys 1–6 switch tools.' },
+      { target: '.scene-btn', title: 'Ready-made scenes', text: 'Dominoes, a dam break, flags in the wind, planets in orbit, a glass studio… pick one here.' },
+      { target: '.rt-toggle', title: 'Ray tracing', text: 'Realistic light: soft shadows, reflections and glass. It is grainy while things move; press Render still (or Space) to let it sharpen.' },
+      { target: '.settings-btn', title: 'Settings', text: 'Change gravity (try the Moon or Orbits), wind, slow motion and the lighting. The detailed knobs are under Advanced.' },
+      { target: '.bottombar', title: 'Time & undo', text: 'Pause, step a frame, slow motion — and Undo if you knock something over. Reset puts the scene back how it started.' },
+      { target: '.mode-switch', title: 'Build your own', text: 'Build mode lets you join shapes with hinges, springs and motors, test them, and save them to your library.' },
+    ];
+  }
+
+  private showHelp(): void {
+    showHelp(this.platform.kind, () => startTour(this.tourSteps()));
+  }
+
+  private updateHint(override?: string): void {
+    if (this.mode === 'build' && !this.builderTesting) {
       this.hintEl.style.display = 'none';
       return;
     }
     this.hintEl.style.display = '';
-    this.hintEl.textContent = (this.tools.active as unknown as { hint: string }).hint;
+    const text = override ?? (this.tools.active as unknown as { hint: string }).hint;
+    if (this.hintEl.textContent !== text) this.hintEl.textContent = text;
   }
 
   toast(message: string, kind: 'info' | 'error' = 'info'): void {
     this.toasts.show(message, kind);
   }
 
+  private get narrow(): boolean {
+    return window.innerWidth <= 760;
+  }
+
   toggleSettings(force?: boolean): void {
     const open = force ?? !this.settingsPanel.isOpen;
     this.settingsPanel.setOpen(open);
     this.topbar.setSettingsOpen(open);
+    if (open && this.narrow) this.toggleLibrary(false);
   }
 
   toggleLibrary(force?: boolean): void {
     const open = force ?? !this.libraryPanel.isOpen;
     this.libraryPanel.setOpen(open);
     this.topbar.setLibraryOpen(open);
+    if (open && this.narrow && this.settingsPanel.isOpen) this.toggleSettings(false);
   }
 
   private bindSettings(): void {
     this.settings.on((p) => {
       if (p === 'render.trails') this.trails.setEnabled(this.settings.data.render.trails);
       if (p === 'raytracing.enabled') this.syncRayTracingUi();
+      if (p === 'physics.paused') this.syncPausedUi();
+      if (p.startsWith('raytracing.')) this.syncRtQualityUi();
     });
   }
 
   private bindKeys(): void {
+    // Buttons and sliders keep focus after a mouse click, which would swallow
+    // Space and the shortcut keys. Keyboard users still get normal focus.
+    document.addEventListener('click', (e) => {
+      if (e.detail === 0) return;
+      const el = (e.target as HTMLElement | null)?.closest<HTMLElement>('button, [role="button"]');
+      if (el && el === document.activeElement) el.blur();
+    });
+    document.addEventListener('pointerup', (e) => {
+      const el = e.target as HTMLInputElement | null;
+      if (el?.tagName === 'INPUT' && el.type === 'range') setTimeout(() => el.blur(), 0);
+    });
     window.addEventListener('keydown', (e) => {
       const tgt = e.target as HTMLElement;
       if (tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'SELECT' || tgt.tagName === 'TEXTAREA' || tgt.isContentEditable)) return;
+      if (document.querySelector('.modal-back, .tour-layer')) return;
+      const k = e.key.toLowerCase();
       if (e.metaKey || e.ctrlKey) {
-        if (e.key === 's') {
+        if (this.mode !== 'play') return; // the builder has its own shortcuts
+        if (k === 's') {
           e.preventDefault();
           this.saveScene();
-        } else if (e.key === 'o') {
+        } else if (k === 'o') {
           e.preventDefault();
           this.openImport();
+        } else if (k === 'z') {
+          e.preventDefault();
+          if (e.shiftKey) this.redo();
+          else this.undo();
+        } else if (k === 'y') {
+          e.preventDefault();
+          this.redo();
         }
         return;
       }
-      if (this.mode === 'build') {
+      if (this.mode === 'build' && !this.builderTesting) {
         if (e.key === 'Escape') this.setMode('play');
+        return;
+      }
+      if (this.builderTesting && e.key === 'Escape') {
+        this.builder?.stopTest();
         return;
       }
       const tool = this.tools.tools.find((t) => t.key === e.key);
@@ -260,17 +372,18 @@ export class App implements AppContext {
       switch (e.key) {
         case ' ': e.preventDefault(); this.togglePause(); break;
         case '.': this.stepOnce(); break;
-        case 'r': case 'R': this.loadScenario(this.scenario.id); break;
+        case 'r': case 'R': this.resetScene(); break;
         case 't': case 'T': this.setRayTracing(!this.settings.data.raytracing.enabled); break;
         case 'b': case 'B': this.setMode('build'); break;
         case 'l': case 'L': this.toggleLibrary(); break;
         case 'g': case 'G': this.toggleSettings(); break;
         case 'f': case 'F': if (this.selected) this.focusOn(this.selected.object); break;
         case 'p': case 'P': this.savePhoto(); break;
-        case 'h': case 'H': case '?': showHelp(this.platform.kind); break;
+        case 'h': case 'H': case '?': this.showHelp(); break;
         case 'Delete': case 'Backspace':
+          e.preventDefault();
           if (e.shiftKey) this.clearScene();
-          else if (this.selected) this.removeEntity(this.selected.entity);
+          else if (this.selected) this.deleteEntity(this.selected.entity);
           break;
         case 'Escape': this.select(null); this.tools.setTool('hand'); break;
       }
@@ -286,28 +399,67 @@ export class App implements AppContext {
 
   private bindDrop(): void {
     const overlay = () => document.getElementById('drop-overlay');
+    const hasFiles = (e: DragEvent) => !!e.dataTransfer && [...e.dataTransfer.types].includes('Files');
     let depth = 0;
-    window.addEventListener('dragenter', (e) => { e.preventDefault(); depth++; overlay()?.classList.add('visible'); });
-    window.addEventListener('dragleave', () => { if (--depth <= 0) { depth = 0; overlay()?.classList.remove('visible'); } });
+    window.addEventListener('dragenter', (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      depth++;
+      overlay()?.classList.add('visible');
+    });
+    window.addEventListener('dragleave', (e) => {
+      if (!hasFiles(e)) return;
+      if (--depth <= 0) {
+        depth = 0;
+        overlay()?.classList.remove('visible');
+      }
+    });
     window.addEventListener('dragover', (e) => e.preventDefault());
     window.addEventListener('drop', async (e) => {
       e.preventDefault();
       depth = 0;
       overlay()?.classList.remove('visible');
+      if (!hasFiles(e)) return;
       const files = [...(e.dataTransfer?.files ?? [])];
       if (!files.length) return;
       const picked = await Promise.all(files.map(async (f) => ({ name: f.name, bytes: await f.arrayBuffer() })));
       await this.handleFiles(picked);
     });
+
+    // Library cards dragged onto the scene
+    const canvas = this.view.renderer.domElement;
+    const pointer = (e: DragEvent): ToolPointer => ({ x: e.clientX, y: e.clientY, button: 0, shift: e.shiftKey, alt: false });
+    const isModel = (e: DragEvent) => !!e.dataTransfer && [...e.dataTransfer.types].includes(MODEL_DRAG_TYPE);
+    canvas.addEventListener('dragover', (e) => {
+      if (!isModel(e) || this.mode !== 'play') return;
+      e.preventDefault();
+      e.dataTransfer!.dropEffect = 'copy';
+      if (this.draggingModel) this.tools.spawn.previewAt(pointer(e), this.draggingModel);
+    });
+    canvas.addEventListener('dragleave', () => this.tools.spawn.hidePreview());
+    canvas.addEventListener('drop', (e) => {
+      if (!isModel(e) || this.mode !== 'play') return;
+      e.preventDefault();
+      e.stopPropagation();
+      const id = e.dataTransfer!.getData(MODEL_DRAG_TYPE) || this.draggingModel;
+      this.tools.spawn.hidePreview();
+      this.draggingModel = null;
+      if (!id) return;
+      if (!this.tools.spawn.placeAt(pointer(e), id)) this.toast('Drop it on the floor or on an object', 'error');
+    });
   }
 
   private async handleFiles(files: PickedFile[]): Promise<void> {
+    if (this.mode === 'build') this.setMode('play');
     // A saved scene?
     if (files.length === 1 && /\.json$/i.test(files[0].name)) {
       try {
         const json = JSON.parse(new TextDecoder().decode(files[0].bytes));
         if (isSavedScene(json)) {
+          this.checkpoint('scene');
           this.applySavedScene(json);
+          this.resetPoint = json;
+          this.topbar.setScene(files[0].name.replace(/\.json$/i, ''));
           return;
         }
       } catch {
@@ -332,6 +484,9 @@ export class App implements AppContext {
   }
 
   private menu(cmd: MenuCommand): void {
+    // Commands that replace the scene belong to Play mode; the Builder would
+    // otherwise restore its stashed scene over them on exit.
+    if (this.mode === 'build' && (cmd === 'reset' || cmd === 'load-scene' || cmd === 'open' || cmd === 'save-scene' || cmd === 'render-photo')) this.setMode('play');
     switch (cmd) {
       case 'open': this.openImport(); break;
       case 'save-scene': this.saveScene(); break;
@@ -339,20 +494,130 @@ export class App implements AppContext {
       case 'render-photo': this.savePhoto(); break;
       case 'toggle-raytracing': this.setRayTracing(!this.settings.data.raytracing.enabled); break;
       case 'toggle-pause': this.togglePause(); break;
-      case 'step': this.stepOnce(); break;
-      case 'reset': this.loadScenario(this.scenario.id); break;
-      case 'help': showHelp(this.platform.kind); break;
+      case 'step': if (this.mode === 'play') this.stepOnce(); break;
+      case 'reset': this.resetScene(); break;
+      case 'help': this.showHelp(); break;
       case 'watch-folder': this.chooseWatchFolder(); break;
       case 'build-mode': this.setMode('build'); break;
       case 'play-mode': this.setMode('play'); break;
-      case 'export-model': if (this.mode === 'build') this.toast('Use Export in the builder bar'); break;
+      case 'export-model':
+        if (this.mode === 'build') this.builder?.exportMenu();
+        else this.toast('Open Build mode (B) to export a model');
+        break;
     }
+  }
+
+  // ------------------------------------------------------------------ library actions
+
+  /** Click a library card: the Place tool now drops that model. */
+  private armSpawn(id: string): void {
+    this.tools.spawn.modelId = id;
+    this.tools.setTool('spawn');
+    this.libraryPanel.setActive(id);
+    this.updateHint();
+    if (this.narrow) this.toggleLibrary(false);
+  }
+
+  /** Double-click a card: drop the model where the camera is looking. */
+  private dropInView(id: string): void {
+    if (this.mode !== 'play') return;
+    const rect = this.view.renderer.domElement.getBoundingClientRect();
+    const p: ToolPointer = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, button: 0, shift: false, alt: false };
+    if (!this.tools.spawn.placeAt(p, id)) {
+      const t = this.view.controls.target;
+      this.spawnModel(id, new THREE.Vector3(t.x, Math.max(0.5, t.y), t.z));
+    }
+    this.libraryPanel.setActive(id);
+    this.tools.spawn.modelId = id;
+  }
+
+  private duplicate(e: Entity): void {
+    const first = e.parts[0];
+    let pos: THREE.Vector3;
+    if (first) {
+      const t = first.body.translation();
+      const d = first.def.position;
+      pos = new THREE.Vector3(t.x - d[0], t.y - d[1], t.z - d[2]);
+    } else {
+      pos = new THREE.Vector3(...e.placement.position);
+    }
+    // Side-step to the camera's right so the copy isn't inside the original.
+    const right = new THREE.Vector3().setFromMatrixColumn(this.view.camera.matrixWorld, 0).setY(0).normalize();
+    const box = new THREE.Box3();
+    for (const p of e.parts) box.expandByObject(p.object);
+    const w = box.isEmpty() ? 0.6 : Math.max(0.3, box.getSize(new THREE.Vector3()).length() * 0.6);
+    pos.addScaledVector(right, w);
+    pos.y += 0.05;
+    this.checkpoint('duplicate');
+    const copy = this.spawnModel(e.model, pos, { yaw: e.placement.rotation[1], record: false });
+    if (copy?.parts[0]) this.select(copy.parts[0]);
+  }
+
+  // ------------------------------------------------------------------ undo / redo
+
+  private snapshot(): SavedScene {
+    return serializeScene(this.sim, this.library, this.settings.data, this.view.camera, this.view.controls.target, this.view.ground.visible);
+  }
+
+  checkpoint(label: string, coalesceMs = 0): void {
+    if (this.mode !== 'play' || !this.sim) return;
+    this.history.record(label, () => this.snapshot(), coalesceMs);
+  }
+
+  undo(): void {
+    if (this.mode !== 'play') return;
+    const e = this.history.undo(() => this.snapshot());
+    if (!e) {
+      this.toast('Nothing to undo');
+      return;
+    }
+    this.restore(e.scene);
+    this.toast(`Undid ${UNDO_LABELS[e.label] ?? e.label}`);
+  }
+
+  redo(): void {
+    if (this.mode !== 'play') return;
+    const e = this.history.redo(() => this.snapshot());
+    if (!e) {
+      this.toast('Nothing to redo');
+      return;
+    }
+    this.restore(e.scene);
+    this.toast(`Redid ${UNDO_LABELS[e.label] ?? e.label}`);
+  }
+
+  private restore(scene: SavedScene): void {
+    this.applySavedScene(scene, { quiet: true, keepCamera: true, keepSettings: true });
+    if (!this.softRestartNoted && this.sim.entities.some((en) => en.model.softParts.length)) {
+      this.softRestartNoted = true;
+      this.toast('Cloth, jelly and water start again from where they were placed');
+    }
+  }
+
+  private syncHistoryUi(): void {
+    this.bottombar?.setHistory(this.history.canUndo, this.history.canRedo,
+      this.history.undoLabel ? UNDO_LABELS[this.history.undoLabel] : null,
+      this.history.redoLabel ? UNDO_LABELS[this.history.redoLabel] : null);
   }
 
   // ------------------------------------------------------------------ simulation control
 
+  /** Called by the Builder when its Test run starts and stops. */
+  setBuilderTesting(on: boolean): void {
+    this.builderTesting = on;
+    document.getElementById('ui')?.classList.toggle('testing', on);
+    this.topbar.setToolbarVisible(this.mode === 'play' || on);
+    if (!on) this.tools.setTool('hand');
+    this.updateHint();
+  }
+
   togglePause(): void {
     this.settings.set('physics', 'paused', !this.settings.data.physics.paused);
+  }
+
+  private syncPausedUi(): void {
+    if (!this.pausedEl) return;
+    this.pausedEl.classList.toggle('visible', this.settings.data.physics.paused && this.mode === 'play' && !this.photoRequest);
   }
 
   stepOnce(): void {
@@ -362,21 +627,48 @@ export class App implements AppContext {
   }
 
   clearScene(): void {
-    this.select(null);
-    this.sim.clear();
-    this.particles?.reset();
-    this.pt?.markSceneDirty();
-    this.toast('Cleared');
-  }
-
-  loadScenario(id: string): void {
-    const sc = SCENARIOS.find((s) => s.id === id) ?? SCENARIOS[0];
-    this.scenario = sc;
-    this.topbar.scenarioSelect.value = sc.id;
+    if (this.mode !== 'play') return;
+    const n = this.sim.entities.filter((e) => !e.locked).length;
+    if (n === 0) return;
+    this.checkpoint('clear');
+    this.tools.cancel();
     this.select(null);
     this.sim.clear();
     this.particles?.reset();
     this.trails.clear();
+    this.tools.clearHighlight();
+    this.pt?.markSceneDirty();
+    this.toast('Cleared — Ctrl/⌘ + Z to bring it back');
+  }
+
+  /** Back to how the scene started (the scenario, or the scene file that was opened). */
+  resetScene(): void {
+    if (this.mode !== 'play') return;
+    this.checkpoint('reset');
+    if (this.resetPoint) this.applySavedScene(this.resetPoint, { quiet: true });
+    else this.loadScenario(this.scenario.id, false);
+  }
+
+  openScenes(): void {
+    showScenePicker(this.scenario.id, (id) => this.loadScenario(id), {
+      onLoadFile: () => this.loadSceneFile(),
+      onSaveFile: () => this.saveScene(),
+    });
+  }
+
+  loadScenario(id: string, record = true): void {
+    if (this.mode === 'build') this.setMode('play');
+    if (record) this.checkpoint('scene');
+    const sc = SCENARIOS.find((s) => s.id === id) ?? SCENARIOS[0];
+    this.scenario = sc;
+    this.resetPoint = null;
+    this.topbar.setScene(sc.name);
+    this.tools.cancel();
+    this.select(null);
+    this.sim.clear();
+    this.particles?.reset();
+    this.trails.clear();
+    this.tools.clearHighlight();
 
     const d = defaultSettings();
     const physKeys: (keyof Settings['physics'])[] = ['gravityMode', 'gravity', 'gravityPreset', 'G', 'windX', 'windZ', 'timeScale', 'airDrag'];
@@ -420,11 +712,14 @@ export class App implements AppContext {
     }
     this.mode = mode;
     this.topbar.setMode(mode);
+    document.getElementById('ui')?.classList.toggle('building', mode === 'build');
     this.select(null);
     if (mode === 'build') {
       this.tools.setTool('hand');
       this.tools.enabled = false;
+      this.libraryWasOpen = this.libraryPanel.isOpen;
       this.libraryPanel.setOpen(false);
+      this.topbar.setLibraryOpen(false);
       this.sim.root.visible = false;
       this.particles?.pickables().forEach((o) => (o.visible = false));
       this.builder!.enter();
@@ -433,10 +728,13 @@ export class App implements AppContext {
       this.tools.enabled = true;
       this.sim.root.visible = true;
       this.particles?.pickables().forEach((o) => (o.visible = true));
-      this.libraryPanel.setOpen(true);
-      this.topbar.setLibraryOpen(true);
+      if (this.libraryWasOpen && !this.narrow) {
+        this.libraryPanel.setOpen(true);
+        this.topbar.setLibraryOpen(true);
+      }
     }
     this.updateHint();
+    this.syncPausedUi();
     this.pt?.markSceneDirty();
   }
 
@@ -478,12 +776,12 @@ export class App implements AppContext {
         normal,
         distance: hit.distance,
         part: isGround ? null : this.sim.partFromObject(hit.object),
-        soft: this.particles?.softFromObject(hit.object) ?? null,
+        soft: isGround ? null : this.particles?.softFromObject(hit.object, hit.point) ?? null,
         object: hit.object,
         isGround,
       };
     }
-    // Fall back to the ground plane even if it is hidden (space scenes) so spawn still works.
+    // Fall back to the ground plane even if it is hidden (space scenes) so placing still works.
     const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
     const pt = this.raycaster.ray.intersectPlane(plane, new THREE.Vector3());
     if (pt && pt.distanceTo(this.view.camera.position) < 200) {
@@ -492,7 +790,7 @@ export class App implements AppContext {
     return null;
   }
 
-  spawnModel(modelOrId: ModelDef | string, position: THREE.Vector3, opts: { yaw?: number; velocity?: THREE.Vector3 } = {}): Entity | null {
+  spawnModel(modelOrId: ModelDef | string, position: THREE.Vector3, opts: { yaw?: number; velocity?: THREE.Vector3; record?: boolean } = {}): Entity | null {
     const model = typeof modelOrId === 'string' ? this.library.get(modelOrId) : modelOrId;
     if (!model) {
       this.toast(`Unknown model ${String(modelOrId)}`, 'error');
@@ -500,9 +798,10 @@ export class App implements AppContext {
     }
     const limit = 2500;
     if (this.sim.parts.length + model.parts.length > limit) {
-      this.toast(`Body limit reached (${limit}). Clear some objects first.`, 'error');
+      this.toast(`That's a lot of objects (limit ${limit}). Clear some first.`, 'error');
       return null;
     }
+    if (opts.record !== false) this.checkpoint('add', 800);
     const e = this.sim.spawn(model, {
       model: model.id,
       position: [position.x, position.y, position.z],
@@ -541,7 +840,14 @@ export class App implements AppContext {
     if (e.locked) return;
     if (this.selected?.entity === e) this.select(null);
     this.sim.remove(e);
+    this.tools?.clearHighlight();
     this.pt?.markSceneDirty();
+  }
+
+  deleteEntity(e: Entity): void {
+    if (e.locked) return;
+    this.checkpoint('delete', 400);
+    this.removeEntity(e);
   }
 
   flash(point: THREE.Vector3, radius: number, color?: number): void {
@@ -573,7 +879,7 @@ export class App implements AppContext {
         this.pt = await PathTracer.create(this.view, this.settings);
       } catch (err) {
         console.error(err);
-        this.toast('Could not start the path tracer', 'error');
+        this.toast('Could not start the ray tracer', 'error');
         this.topbar.setRayTracing(false);
         this.ptLoading = false;
         return;
@@ -586,19 +892,31 @@ export class App implements AppContext {
     this.pt?.markEnvironmentDirty();
     this.pt?.reset();
     this.syncRayTracingUi();
-    if (on) this.toast('Ray tracing on — pause (Space) to let the image converge');
+    if (on) this.toast('Ray tracing on — press Render still (or Space) for a sharp picture');
+  }
+
+  /** Pause and let the ray tracer converge. */
+  renderStill(): void {
+    if (!this.settings.data.physics.paused) this.settings.set('physics', 'paused', true);
+    this.pt?.requestPresent();
   }
 
   private syncRayTracingUi(): void {
     const on = this.settings.data.raytracing.enabled && !!this.pt;
     this.topbar.setRayTracing(on);
     this.rtBadge.classList.toggle('visible', on);
+    this.syncRtQualityUi();
+  }
+
+  private syncRtQualityUi(): void {
+    if (!this.rtQuality) return;
+    this.rtQuality.value = currentRtQuality(this.settings.data) ?? 'custom';
   }
 
   // ------------------------------------------------------------------ files
 
   async saveScene(): Promise<void> {
-    const data = serializeScene(this.sim, this.library, this.settings.data, this.view.camera, this.view.controls.target, this.view.ground.visible);
+    const data = this.snapshot();
     const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
     const ok = await this.platform.saveFile(`${this.scenario.id}-scene.json`, blob);
     if (ok) this.toast('Scene saved');
@@ -609,12 +927,18 @@ export class App implements AppContext {
     if (files.length) await this.handleFiles(files);
   }
 
-  applySavedScene(scene: ReturnType<typeof serializeScene>, quiet = false): void {
+  applySavedScene(scene: SavedScene, opts: boolean | { quiet?: boolean; keepCamera?: boolean; keepSettings?: boolean } = false): void {
+    const o = typeof opts === 'boolean' ? { quiet: opts } : opts;
+    this.tools?.cancel(); // let go of anything held: its body is about to go
     this.select(null);
     this.sim.clear();
     this.particles?.reset();
-    for (const [k, v] of Object.entries(scene.physics)) this.settings.set('physics', k as keyof Settings['physics'], v as never);
-    for (const [k, v] of Object.entries(scene.render)) this.settings.set('render', k as keyof Settings['render'], v as never);
+    this.trails.clear();
+    this.tools?.clearHighlight();
+    if (!o.keepSettings) {
+      for (const [k, v] of Object.entries(scene.physics)) this.settings.set('physics', k as keyof Settings['physics'], v as never);
+      for (const [k, v] of Object.entries(scene.render)) this.settings.set('render', k as keyof Settings['render'], v as never);
+    }
     this.sim.setGroundEnabled(scene.ground);
     this.view.ground.visible = scene.ground;
     let missing = 0;
@@ -625,6 +949,7 @@ export class App implements AppContext {
         continue;
       }
       const ent = this.sim.spawn(model, { model: model.id, position: e.placement.position, rotation: e.placement.rotation });
+      if (typeof e.model !== 'string' && !this.library.builtin.some((b) => b.id === model.id)) ent.ownModel = true;
       for (const part of ent.parts) {
         const s = e.parts[part.def.id];
         if (!s) continue;
@@ -641,29 +966,34 @@ export class App implements AppContext {
       }
     }
     this.sim.sync(1);
-    this.view.camera.position.set(...scene.camera.position);
-    this.view.controls.target.set(...scene.camera.target);
-    this.view.controls.update();
+    if (!o.keepCamera) {
+      this.view.camera.position.set(...scene.camera.position);
+      this.view.controls.target.set(...scene.camera.target);
+      this.view.controls.update();
+    }
     this.pt?.markSceneDirty();
     this.pt?.markMaterialsDirty();
-    if (!quiet || missing) this.toast(missing ? `Scene loaded (${missing} model(s) missing from your library)` : 'Scene loaded', missing ? 'error' : 'info');
+    if (!o.quiet || missing) this.toast(missing ? `Scene loaded (${missing} model(s) missing from your library)` : 'Scene loaded', missing ? 'error' : 'info');
   }
 
   async savePhoto(): Promise<void> {
+    if (this.photoRequest) return;
     const rt = this.settings.data.raytracing.enabled && this.pt;
     if (rt) {
       const wasPaused = this.settings.data.physics.paused;
       this.settings.set('physics', 'paused', true);
+      // Keep the samples already gathered if the picture was converging anyway.
+      const already = this.pt!.samples;
       this.pt!.photoMode = true;
-      this.pt!.reset();
       const target = Math.min(this.settings.data.raytracing.maxSamples, 400);
-      this.toast(`Rendering ${target} samples…`);
+      if (already < target) this.toast(`Rendering ${target} samples…`);
       await new Promise<void>((resolve) => (this.photoRequest = { samples: target, resolve }));
       this.pt!.photoMode = false;
       if (!wasPaused) this.settings.set('physics', 'paused', false);
     } else {
       await new Promise<void>((resolve) => (this.photoRequest = { samples: 0, resolve }));
     }
+    this.syncPausedUi();
   }
 
   private capturePhoto(): void {
@@ -674,7 +1004,9 @@ export class App implements AppContext {
       if (blob) {
         const name = `physics-sim-${new Date().toISOString().replace(/[:.]/g, '-')}.png`;
         const ok = await this.platform.saveFile(name, blob);
-        if (ok) this.toast('Image saved');
+        if (ok) this.toast('Picture saved');
+      } else {
+        this.toast('Could not capture the picture', 'error');
       }
       req.resolve();
     }, 'image/png');
@@ -732,8 +1064,13 @@ export class App implements AppContext {
 
     if (this.photoRequest && (!rtOn || this.pt!.samples >= this.photoRequest.samples)) this.capturePhoto();
 
-    const st = this.sim.stats();
-    this.bottombar.setStats({ fps: this.fps, bodies: st.bodies, particles: this.particles?.count() ?? 0, kinetic: st.kinetic });
+    // Stats are for humans: 4 updates a second is plenty.
+    const now = performance.now();
+    if (now - this.lastStats > 250) {
+      this.lastStats = now;
+      const st = this.sim.stats();
+      this.bottombar.setStats({ fps: this.fps, bodies: st.bodies, particles: this.particles?.count() ?? 0, kinetic: st.kinetic });
+    }
   }
 
   private lastBadge = 0;
@@ -744,9 +1081,15 @@ export class App implements AppContext {
     const pt = this.pt!;
     const max = this.photoRequest ? this.photoRequest.samples : this.settings.data.raytracing.maxSamples;
     const s = Math.floor(pt.samples);
-    if (pt.compiling) this.rtText.textContent = 'Compiling path tracer shaders…';
-    else if (moving) this.rtText.textContent = 'Live · pause to converge';
-    else this.rtText.textContent = `${s} / ${max} samples`;
-    this.rtBar.style.width = `${Math.min(100, (s / max) * 100)}%`;
+    let text: string;
+    if (pt.compiling) text = 'Preparing the ray tracer…';
+    else if (this.photoRequest) text = `Rendering picture… ${s} / ${max}`;
+    else if (moving) text = 'Moving — preview quality';
+    else if (s >= max) text = `Done · ${max} samples`;
+    else text = `Sharpening… ${s} / ${max}`;
+    if (this.rtText.textContent !== text) this.rtText.textContent = text;
+    this.rtBar.style.width = `${moving ? 0 : Math.min(100, (s / max) * 100)}%`;
+    this.rtStill.style.display = moving && !this.settings.data.physics.paused ? '' : 'none';
+    this.rtSave.classList.toggle('primary', !moving && s >= max);
   }
 }

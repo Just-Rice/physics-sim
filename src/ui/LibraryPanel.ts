@@ -5,12 +5,18 @@ import type { ThumbnailRenderer } from '../models/thumbnails';
 import type { ModelDef } from '../models/schema';
 import { BUILTIN_CATEGORIES } from '../models/builtin';
 
+/** MIME type used when dragging a library card into the scene. */
+export const MODEL_DRAG_TYPE = 'application/x-physics-sim-model';
+
 export interface LibraryCallbacks {
   onPick(model: ModelDef): void;
+  /** Double-click: drop the model straight into view. */
+  onQuickAdd(model: ModelDef): void;
   onImport(): void;
   onDelete(model: ModelDef): void;
   onEdit(model: ModelDef): void;
   onExport(model: ModelDef): void;
+  onClose(): void;
 }
 
 export class LibraryPanel {
@@ -27,17 +33,27 @@ export class LibraryPanel {
       builtin: h('button', { class: 'active', onclick: () => this.setTab('builtin') }, 'Built-in'),
       mine: h('button', { onclick: () => this.setTab('mine') }, 'My models'),
     };
-    this.search = h('input', { class: 'lib-search', type: 'search', placeholder: 'Search models…', oninput: () => this.render() });
-    this.search.addEventListener('keydown', (e) => e.stopPropagation());
+    this.search = h('input', { class: 'lib-search', type: 'search', placeholder: 'Search models…', 'aria-label': 'Search models', oninput: () => this.render() });
+    this.search.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+      if (e.key === 'Escape') {
+        this.search.value = '';
+        this.render();
+        this.search.blur();
+      }
+    });
     this.body = h('div', { class: 'lib-body' });
-    this.el = h('div', { class: 'library panel' },
+    this.el = h('div', { class: 'library panel', 'aria-label': 'Model library' },
       h('div', { class: 'lib-head' },
-        h('div', { class: 'lib-title' }, h('span', {}, 'Library'), h('span', { class: 'insp-sub' }, 'click a model, then click in the scene')),
-        h('div', { class: 'lib-tabs' }, this.tabs.builtin, this.tabs.mine),
+        h('div', { class: 'lib-title' },
+          h('span', {}, 'Library'),
+          h('button', { class: 'icon-btn sheet-close', title: 'Close (L)', 'aria-label': 'Close library', onclick: () => cb.onClose() }, svgIcon(icons.close))),
+        h('div', { class: 'lib-help' }, 'Drag a model into the scene — or click it, then click where it should go.'),
+        h('div', { class: 'lib-tabs', role: 'tablist' }, this.tabs.builtin, this.tabs.mine),
         this.search),
       this.body,
       h('div', { class: 'lib-actions' },
-        h('button', { class: 'btn grow', onclick: () => cb.onImport(), title: 'Import .glb / .gltf / .obj / .stl or a .physmodel.json' }, svgIcon(icons.upload), 'Import model')),
+        h('button', { class: 'btn grow', onclick: () => cb.onImport(), title: 'Import .glb / .gltf / .obj / .stl or a .physmodel.json' }, svgIcon(icons.upload), 'Import a model…')),
     );
     this.observer = new IntersectionObserver((entries) => {
       for (const e of entries) {
@@ -80,13 +96,37 @@ export class LibraryPanel {
   private card(m: ModelDef, mine: boolean): HTMLElement {
     const img = h('img', { alt: '', 'data-id': m.id, draggable: false });
     this.observer.observe(img);
-    const card = h('div', { class: `lib-card${m.id === this.activeId ? ' active' : ''}`, 'data-id': m.id, title: m.description || m.name, onclick: () => this.cb.onPick(m) },
-      img, h('div', { class: 'name' }, m.name));
+    const card = h('div', {
+      class: `lib-card${m.id === this.activeId ? ' active' : ''}`,
+      'data-id': m.id,
+      draggable: 'true',
+      tabindex: 0,
+      role: 'button',
+      'aria-label': m.name,
+      onclick: () => this.cb.onPick(m),
+      ondblclick: () => this.cb.onQuickAdd(m),
+    }, img, h('div', { class: 'name' }, m.name));
+    card.title = `${m.description ? m.description + '\n' : ''}Drag into the scene · double-click to drop it in view · right-click to edit${mine ? '' : ' a copy'} in Build`;
+    card.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') this.cb.onQuickAdd(m);
+      else if (e.key === ' ') this.cb.onPick(m);
+      else return; // every other key keeps working as a shortcut
+      e.preventDefault();
+      e.stopPropagation();
+    });
+    card.addEventListener('dragstart', (e) => {
+      if (!e.dataTransfer) return;
+      e.dataTransfer.setData(MODEL_DRAG_TYPE, m.id);
+      e.dataTransfer.setData('text/plain', m.name);
+      e.dataTransfer.effectAllowed = 'copy';
+      if (img.complete && img.naturalWidth) e.dataTransfer.setDragImage(img, 32, 32);
+      card.classList.add('dragging');
+    });
+    card.addEventListener('dragend', () => card.classList.remove('dragging'));
     if (mine) {
-      const del = h('button', { class: 'del', title: 'Delete', onclick: (e: Event) => { e.stopPropagation(); this.cb.onDelete(m); } }, '×');
+      const del = h('button', { class: 'del', title: 'Delete from library', 'aria-label': `Delete ${m.name}`, onclick: (e: Event) => { e.stopPropagation(); this.cb.onDelete(m); } }, '×');
       card.append(del);
     }
-    card.title = `${m.description || m.name}\nRight-click: open in the Model Builder${mine ? '' : ' (as a copy)'}`;
     card.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       this.cb.onEdit(m);
@@ -99,19 +139,26 @@ export class LibraryPanel {
     const match = (m: ModelDef) => !q || m.name.toLowerCase().includes(q) || m.category.toLowerCase().includes(q) || m.description.toLowerCase().includes(q);
     this.body.replaceChildren();
     if (this.tab === 'builtin') {
+      let any = false;
       for (const cat of BUILTIN_CATEGORIES) {
         const models = this.library.builtin.filter((m) => m.category === cat && match(m));
         if (!models.length) continue;
+        any = true;
         this.body.append(h('div', { class: 'lib-cat' }, cat), h('div', { class: 'lib-grid' }, ...models.map((m) => this.card(m, false))));
       }
+      if (!any) this.body.append(h('div', { class: 'lib-empty' }, `Nothing matches “${q}”.`));
     } else {
       const models = this.library.user.filter(match);
       if (!models.length) {
         this.body.append(h('div', { class: 'lib-empty' },
-          'No models yet.', h('br'), 'Make one in ', h('b', {}, 'Build'), ' mode, or import a ', h('b', {}, '.glb'), ' from Blender.'));
+          q ? `Nothing matches “${q}”.` : 'No models of your own yet.',
+          h('br'), h('br'),
+          h('button', { class: 'btn small', onclick: () => document.dispatchEvent(new CustomEvent('physics-sim:build')) }, 'Open the Model Builder'),
+          h('br'), h('br'),
+          'or import a .glb from Blender.'));
       } else {
         this.body.append(h('div', { class: 'lib-grid' }, ...models.map((m) => this.card(m, true))));
-        this.body.append(h('div', { class: 'insp-sub', style: 'margin-top:10px' }, 'Right-click any model to edit it in the builder.'));
+        this.body.append(h('div', { class: 'insp-sub', style: 'margin-top:10px' }, 'Right-click a model to change it in the Builder.'));
       }
     }
   }

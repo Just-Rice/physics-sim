@@ -10,6 +10,24 @@ export const GRAVITY_PRESETS: Record<string, number> = {
   'Zero-G': 0,
 };
 
+export type RtQuality = 'fast' | 'balanced' | 'best';
+
+/** Ray-tracing quality presets offered in Quick settings and on the RT badge. */
+export const RT_PRESETS: Record<RtQuality, { label: string; bounces: number; transmissiveBounces: number; renderScale: number; liveRenderScale: number; maxSamples: number }> = {
+  fast: { label: 'Fast', bounces: 3, transmissiveBounces: 6, renderScale: 0.75, liveRenderScale: 0.35, maxSamples: 256 },
+  balanced: { label: 'Balanced', bounces: 6, transmissiveBounces: 10, renderScale: 1, liveRenderScale: 0.5, maxSamples: 2000 },
+  best: { label: 'Best', bounces: 12, transmissiveBounces: 20, renderScale: 1.25, liveRenderScale: 0.6, maxSamples: 8000 },
+};
+
+/** Which preset the current ray-tracing settings match, if any. */
+export function currentRtQuality(s: Settings): RtQuality | null {
+  for (const [k, p] of Object.entries(RT_PRESETS) as [RtQuality, (typeof RT_PRESETS)[RtQuality]][]) {
+    const r = s.raytracing;
+    if (r.bounces === p.bounces && r.renderScale === p.renderScale && r.maxSamples === p.maxSamples) return k;
+  }
+  return null;
+}
+
 export interface Settings {
   physics: {
     paused: boolean;
@@ -158,5 +176,14 @@ export class SettingsStore {
     if (this.data[group][field] === value) return;
     this.data[group][field] = value;
     this.emit(`${String(group)}.${String(field)}`);
+  }
+
+  applyRtQuality(q: RtQuality): void {
+    const p = RT_PRESETS[q];
+    this.set('raytracing', 'bounces', p.bounces);
+    this.set('raytracing', 'transmissiveBounces', p.transmissiveBounces);
+    this.set('raytracing', 'renderScale', p.renderScale);
+    this.set('raytracing', 'liveRenderScale', p.liveRenderScale);
+    this.set('raytracing', 'maxSamples', p.maxSamples);
   }
 }

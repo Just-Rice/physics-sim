@@ -1,46 +1,56 @@
 import { h, modal } from './dom';
 
+const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+const mod = isMac ? '⌘' : 'Ctrl';
+
 const keys: [string, string][] = [
-  ['1 – 6', 'Hand · Spawn · Cannon · Explode · Attract · Erase'],
+  ['1 – 6', 'Hand · Place · Cannon · Explode · Attract · Erase'],
   ['Space', 'Pause / resume'],
   ['.', 'Step one frame while paused'],
-  ['R', 'Reset the scenario'],
-  ['T', 'Toggle ray tracing'],
-  ['B / Esc', 'Model Builder / back to Play'],
-  ['L', 'Show / hide the library'],
-  ['G', 'Show / hide settings'],
-  ['F', 'Focus the camera on the selection'],
-  ['Del', 'Delete the selection'],
-  ['P', 'Save an image'],
-  ['H or ?', 'This help'],
+  [`${mod} Z  /  ${mod} ⇧ Z`, 'Undo / redo'],
+  ['R', 'Reset the scene to how it started'],
+  ['T', 'Ray tracing on / off'],
+  ['B  /  Esc', 'Model Builder / back to Play'],
+  ['L  /  G', 'Library / settings'],
+  ['F', 'Point the camera at the selection'],
+  ['Del', 'Delete the selection (⇧ Del clears everything)'],
+  ['P', 'Save a picture'],
+  ['H  or  ?', 'This help'],
 ];
 
 const mouse: [string, string][] = [
-  ['Left drag (empty)', 'Orbit the camera'],
-  ['Right drag', 'Pan'],
-  ['Scroll', 'Zoom (or push/pull while grabbing)'],
-  ['Alt + drag', 'Orbit, even over objects'],
-  ['Drop a file', 'Import .glb .gltf .obj .stl .physmodel.json'],
+  ['Drag an object', 'Grab it — let go while moving to throw'],
+  ['Drag empty space', 'Look around'],
+  ['Right-drag', 'Pan the camera'],
+  ['Scroll', 'Zoom (while grabbing: push / pull)'],
+  ['Alt + drag', 'Look around, even over objects'],
+  ['Drag from the library', 'Drop a model exactly where you want it'],
+  ['Double-click a model', 'Drop it in the middle of the view'],
+  ['Drop a file on the window', 'Import .glb .gltf .obj .stl, a model or a scene'],
 ];
 
-export function showHelp(platformKind: 'web' | 'desktop'): void {
+export function showHelp(platformKind: 'web' | 'desktop', onTour?: () => void): void {
   const grid = (rows: [string, string][]) => h('div', { class: 'help-grid' }, ...rows.flatMap(([k, d]) => [h('kbd', {}, k), h('div', {}, d)]));
   const body = h('div', {},
-    h('h2', {}, 'Physics Sim'),
-    h('p', { class: 'sub' }, 'Rigid bodies, joints, cloth, soft bodies, fluids and orbital gravity — with a path-traced renderer for photo-real light.'),
+    h('h2', {}, 'Physics Sim — help'),
+    h('p', { class: 'sub' }, 'Rigid bodies, joints, cloth, jelly, water and orbital gravity — with ray tracing for photo-real light.'),
     h('div', { class: 'help-cols' },
-      h('div', {}, h('h3', {}, 'Keyboard'), grid(keys)),
-      h('div', {}, h('h3', {}, 'Mouse'), grid(mouse),
+      h('div', {}, h('h3', {}, 'Mouse & touch'), grid(mouse),
+        h('h3', {}, 'Touch screens'),
+        h('div', { class: 'insp-sub help-text' }, 'One finger uses the current tool; two fingers turn, pan and zoom the camera.')),
+      h('div', {}, h('h3', {}, 'Keyboard'), grid(keys),
         h('h3', {}, 'Ray tracing'),
-        h('div', { class: 'insp-sub', style: 'font-size:12px;line-height:1.5' },
-          'Turn on Ray tracing for physically based light: soft shadows, reflections, refraction through glass and water, and emissive lights. ',
-          'While things move it renders a fast, noisier preview; pause (Space) and it converges to a clean image. Settings → Ray tracing has depth of field (click to focus) and photo export.'),
+        h('div', { class: 'insp-sub help-text' },
+          'Turn it on for soft shadows, reflections, glass and glowing lights. While things move you see a quick, grainy preview; ',
+          'press Render still (or Space) and the picture sharpens. Pick Fast / Balanced / Best quality on the badge at the top.'),
         h('h3', {}, 'Making models'),
-        h('div', { class: 'insp-sub', style: 'font-size:12px;line-height:1.5' },
-          'Use Build mode to assemble shapes, joints and motors, or import a .glb exported from Blender. ',
-          platformKind === 'desktop' ? 'The Mac app can watch a folder and live-reload models whenever Blender re-exports them.' : 'See docs/BLENDER.md for the Blender add-on and naming conventions.'),
+        h('div', { class: 'insp-sub help-text' },
+          'Build mode snaps shapes together with hinges, springs and motors. You can also import a .glb from Blender. ',
+          platformKind === 'desktop' ? 'The Mac app reloads a model every time Blender re-exports it into the live-link folder.' : 'The Blender add-on and naming tips are in docs/BLENDER.md.'),
       )),
-    h('div', { class: 'footer' }, h('button', { class: 'btn primary', onclick: () => m.close() }, 'Got it')),
+    h('div', { class: 'footer' },
+      onTour ? h('button', { class: 'btn', onclick: () => { m.close(); onTour(); } }, 'Replay the tour') : null,
+      h('button', { class: 'btn primary', onclick: () => m.close() }, 'Got it')),
   );
   const m = modal(body);
 }

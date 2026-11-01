@@ -40,11 +40,52 @@ export class Toasts {
   }
 }
 
-export function modal(content: HTMLElement, opts: { onClose?: () => void; dismissable?: boolean } = {}): { close: () => void; el: HTMLElement } {
+/** In-app confirmation (replaces window.confirm, which is ugly in the Mac app). */
+export function confirmDialog(title: string, message: string, opts: { confirm?: string; danger?: boolean } = {}): Promise<boolean> {
+  return new Promise((resolve) => {
+    let answered = false;
+    const done = (v: boolean) => {
+      if (answered) return;
+      answered = true;
+      m.close();
+      resolve(v);
+    };
+    const ok = h('button', { class: `btn ${opts.danger ? 'danger-fill' : 'primary'}`, onclick: () => done(true) }, opts.confirm ?? 'OK');
+    const body = h('div', { class: 'confirm' },
+      h('h2', {}, title),
+      h('p', { class: 'sub' }, message),
+      h('div', { class: 'footer' }, h('button', { class: 'btn', onclick: () => done(false) }, 'Cancel'), ok));
+    const m = modal(body, { onClose: () => { if (!answered) { answered = true; resolve(false); } }, small: true });
+    setTimeout(() => ok.focus(), 0);
+  });
+}
+
+/** localStorage that never throws (private windows, blocked storage, previews). */
+export const prefs = {
+  get(key: string): string | null {
+    try {
+      return window.localStorage.getItem(`physics-sim:${key}`);
+    } catch {
+      return null;
+    }
+  },
+  set(key: string, value: string): void {
+    try {
+      window.localStorage.setItem(`physics-sim:${key}`, value);
+    } catch {
+      /* storage unavailable: preference just isn't remembered */
+    }
+  },
+};
+
+export function modal(content: HTMLElement, opts: { onClose?: () => void; dismissable?: boolean; small?: boolean } = {}): { close: () => void; el: HTMLElement } {
   const back = h('div', { class: 'modal-back' });
-  const box = h('div', { class: 'modal panel' }, content);
+  const box = h('div', { class: `modal panel${opts.small ? ' small' : ''}` }, content);
   back.append(box);
+  let closed = false;
   const close = () => {
+    if (closed) return;
+    closed = true;
     back.remove();
     window.removeEventListener('keydown', onKey, true);
     opts.onClose?.();

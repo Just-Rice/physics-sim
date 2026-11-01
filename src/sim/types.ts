@@ -64,4 +64,6 @@ export interface Entity {
   softs: SoftInstance[];
   /** Protected entities (the ground) cannot be deleted by tools. */
   locked?: boolean;
+  /** True once `model` is a private copy holding per-object edits (inspector changes). */
+  ownModel?: boolean;
 }

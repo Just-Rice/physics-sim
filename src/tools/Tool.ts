@@ -1,4 +1,5 @@
-import type { AppContext } from '../app/context';
+import type { AppContext, PickResult } from '../app/context';
+import type { PartInstance } from '../sim/types';
 
 export interface ToolPointer {
   x: number;
@@ -8,12 +9,24 @@ export interface ToolPointer {
   alt: boolean;
 }
 
+/** What the UI should show while the pointer hovers over something. */
+export interface HoverInfo {
+  cursor: string;
+  /** Contextual hint; falls back to the tool's own hint. */
+  hint?: string;
+  /** Part to highlight, and how. */
+  highlight?: PartInstance | null;
+  highlightColor?: number;
+}
+
 export abstract class Tool {
   abstract readonly id: string;
   abstract readonly label: string;
   abstract readonly icon: string;
   abstract readonly key: string;
   abstract readonly hint: string;
+  /** One line shown in the toolbar tooltip. */
+  abstract readonly description: string;
 
   constructor(protected ctx: AppContext) {}
 
@@ -26,6 +39,14 @@ export abstract class Tool {
   /** Return true to consume the wheel event. */
   onWheel(_deltaY: number): boolean {
     return false;
+  }
+  /** Feedback for the thing under the cursor (not called while dragging). */
+  hover(_hit: PickResult | null): HoverInfo {
+    return { cursor: 'crosshair' };
+  }
+  /** Cursor while a press is being handled (dragging). */
+  get activeCursor(): string {
+    return 'crosshair';
   }
   /** Called every animation frame. */
   update(_dt: number): void {}

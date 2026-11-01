@@ -19,6 +19,8 @@ export interface Scenario {
   id: string;
   name: string;
   description: string;
+  /** Short labels shown in the scene gallery. */
+  tags: string[];
   physics?: Partial<{ gravityMode: GravityMode; gravity: number; gravityPreset: string; G: number; windX: number; windZ: number; timeScale: number; airDrag: boolean }>;
   render?: Partial<{ environment: EnvironmentPreset; sunElevation: number; sunAzimuth: number; trails: boolean; exposure: number }>;
   ground?: boolean;
@@ -37,6 +39,7 @@ export const SCENARIOS: Scenario[] = [
     id: 'sandbox',
     name: 'Sandbox',
     description: 'A few toys to start with. Grab, throw and spawn from the library.',
+    tags: ['Start here', 'Rigid bodies'],
     camera: { position: [7, 4.5, 8], target: [0, 0.8, 0] },
     placements: () => [
       { model: 'ramp', position: [2.5, 0, -1.5] },
@@ -50,9 +53,18 @@ export const SCENARIOS: Scenario[] = [
     ],
   },
   {
+    id: 'empty',
+    name: 'Empty World',
+    description: 'Just the floor. Fill it from the library.',
+    tags: ['Blank canvas'],
+    camera: { position: [6, 4, 8], target: [0, 0.5, 0] },
+    placements: () => [],
+  },
+  {
     id: 'cradle',
     name: "Newton's Cradle",
     description: 'Momentum and energy pass through the row of steel balls.',
+    tags: ['Momentum', 'Joints'],
     camera: { position: [1.8, 1.4, 2.6], target: [0, 0.7, 0] },
     physics: { airDrag: false },
     placements: () => [{ model: 'newtons-cradle', position: [0, 0, 0] }],
@@ -61,6 +73,7 @@ export const SCENARIOS: Scenario[] = [
     id: 'dominoes',
     name: 'Domino Run',
     description: 'A spiral and a long line of dominoes that topple on their own.',
+    tags: ['Chain reaction'],
     camera: { position: [5, 4, 6], target: [0, 0, 0] },
     placements: () => [
       { model: 'domino-spiral', position: [-1.5, 0, 0] },
@@ -71,6 +84,7 @@ export const SCENARIOS: Scenario[] = [
     id: 'jenga',
     name: 'Jenga',
     description: 'Pull blocks out with the hand tool — carefully.',
+    tags: ['Stacking', 'Hand tool'],
     camera: { position: [2.5, 2.2, 3], target: [0, 1.2, 0] },
     placements: () => [{ model: 'jenga', position: [0, 0, 0] }],
   },
@@ -78,6 +92,7 @@ export const SCENARIOS: Scenario[] = [
     id: 'bowling',
     name: 'Bowling',
     description: 'A bowling ball heading for ten pins.',
+    tags: ['Collisions'],
     camera: { position: [-6, 1.6, 3], target: [3, 0.2, 0] },
     placements: () => [
       { model: 'bowling-pins', position: [6, 0, 0] },
@@ -88,6 +103,7 @@ export const SCENARIOS: Scenario[] = [
     id: 'wrecking',
     name: 'Wrecking Ball',
     description: 'A 3-tonne steel ball swings into a brick wall.',
+    tags: ['Destruction', 'Joints'],
     camera: { position: [7, 3.5, 6], target: [2, 1.5, 0] },
     placements: () => [
       { model: inline(wreckingBall(6.5)), position: [0, 0, 0] },
@@ -99,6 +115,7 @@ export const SCENARIOS: Scenario[] = [
     id: 'galton',
     name: 'Galton Board',
     description: 'Balls bounce through pegs and pile up in a bell curve.',
+    tags: ['Probability', 'Many bodies'],
     camera: { position: [0, 1.4, 3.6], target: [0, 1.3, 0] },
     placements: () => [
       { model: 'galton-board', position: [0, 0, 0] },
@@ -109,6 +126,7 @@ export const SCENARIOS: Scenario[] = [
     id: 'orbits',
     name: 'Orbits',
     description: 'A star, planets and a moon under n-body gravity. Throw in more planets.',
+    tags: ['Space', 'N-body gravity'],
     physics: { gravityMode: 'nbody', G: 0.3, airDrag: false },
     render: { environment: 'night', trails: true },
     ground: false,
@@ -144,6 +162,7 @@ export const SCENARIOS: Scenario[] = [
     id: 'figure8',
     name: 'Three-Body Figure-8',
     description: 'Three equal masses chase each other along a figure-eight (Chenciner–Montgomery orbit).',
+    tags: ['Space', 'Chaos'],
     physics: { gravityMode: 'nbody', G: 1, airDrag: false },
     render: { environment: 'night', trails: true },
     ground: false,
@@ -154,6 +173,7 @@ export const SCENARIOS: Scenario[] = [
     id: 'dam',
     name: 'Dam Break',
     description: 'A column of water collapses in a glass tank and floats wooden crates.',
+    tags: ['Fluids', 'Buoyancy'],
     camera: { position: [0.5, 2.6, 3.6], target: [0, 0.4, 0] },
     placements: () => [
       { model: 'glass-tank', position: [0, 0, 0] },
@@ -166,6 +186,7 @@ export const SCENARIOS: Scenario[] = [
     id: 'cloth',
     name: 'Cloth Drape',
     description: 'A sheet falls over a sphere and a crate.',
+    tags: ['Cloth'],
     camera: { position: [3.2, 2.6, 3.4], target: [0, 0.6, 0] },
     placements: () => [
       { model: 'crate', position: [0.6, 0.25, 0.2] },
@@ -178,6 +199,7 @@ export const SCENARIOS: Scenario[] = [
     id: 'flag',
     name: 'Flag in the Wind',
     description: 'Wind drives the cloth through per-triangle aerodynamic drag.',
+    tags: ['Cloth', 'Wind'],
     physics: { windX: 7, windZ: 1.5 },
     camera: { position: [2.5, 2.6, 4.2], target: [0.8, 2.1, 0] },
     placements: () => [{ model: 'flag', position: [0, 0, 0] }, { model: 'flag', position: [-2.5, 0, -1.5] }],
@@ -186,6 +208,7 @@ export const SCENARIOS: Scenario[] = [
     id: 'jelly',
     name: 'Jelly Playground',
     description: 'Soft bodies wobble down a ramp and onto a trampoline.',
+    tags: ['Soft bodies'],
     camera: { position: [4, 3, 5], target: [0, 0.6, 0] },
     placements: () => [
       { model: 'trampoline', position: [0, 0, 0] },
@@ -201,6 +224,7 @@ export const SCENARIOS: Scenario[] = [
     id: 'studio',
     name: 'Glass Studio',
     description: 'Glass, chrome, gold and neon in a studio — turn on ray tracing.',
+    tags: ['Ray tracing', 'Materials'],
     render: { environment: 'studio', exposure: 0.5 },
     camera: { position: [2.4, 1.3, 2.8], target: [0, 0.35, 0] },
     placements: () => [
@@ -221,6 +245,7 @@ export const SCENARIOS: Scenario[] = [
     id: 'moon',
     name: 'Moon Base',
     description: 'One-sixth gravity: ragdolls, towers and long slow arcs.',
+    tags: ['Low gravity', 'Ragdolls'],
     physics: { gravityPreset: 'Moon', gravity: 1.62, airDrag: false },
     render: { environment: 'night', sunElevation: 25 },
     camera: { position: [6, 3.5, 7], target: [0, 1, 0] },

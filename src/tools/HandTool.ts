@@ -1,7 +1,8 @@
 import * as THREE from 'three';
-import { Tool, type ToolPointer } from './Tool';
+import { Tool, type HoverInfo, type ToolPointer } from './Tool';
 import { icons } from '../ui/icons';
 import type { PartInstance } from '../sim/types';
+import type { PickResult } from '../app/context';
 
 /**
  * Click to select, drag to grab. The grabbed point is pulled towards the
@@ -14,7 +15,24 @@ export class HandTool extends Tool {
   readonly label = 'Hand';
   readonly icon = icons.hand;
   readonly key = '1';
-  readonly hint = 'Click to inspect · drag to grab and throw · scroll while dragging to push/pull';
+  readonly hint = 'Drag an object to grab and throw it · click to inspect · drag empty space to look around';
+  readonly description = 'Grab, throw and inspect objects';
+
+  override hover(hit: PickResult | null): HoverInfo {
+    if (!hit || hit.isGround) return { cursor: 'default', hint: 'Drag to look around · right-drag to pan · scroll to zoom' };
+    if (hit.soft) {
+      const kind = hit.soft.def.type;
+      if (kind === 'fluid') return { cursor: 'default', hint: 'Water — use Attract or Explode to stir it, Erase to remove it' };
+      return { cursor: 'grab', hint: kind === 'cloth' ? 'Drag to pull the cloth' : 'Drag to squish and throw it' };
+    }
+    if (!hit.part) return { cursor: 'default' };
+    if (!hit.part.body.isDynamic()) return { cursor: 'pointer', hint: `${hit.part.entity.name} is pinned in place — click to inspect`, highlight: hit.part };
+    return { cursor: 'grab', hint: `Drag to throw the ${hit.part.entity.name.toLowerCase()} · click to inspect`, highlight: hit.part };
+  }
+
+  override get activeCursor(): string {
+    return 'grabbing';
+  }
 
   private part: PartInstance | null = null;
   private particleGrab = -1;
@@ -53,7 +71,10 @@ export class HandTool extends Tool {
     this.target.copy(hit.point);
 
     if (hit.soft && this.ctx.particles) {
-      this.particleGrab = this.ctx.particles.grab(hit.soft, hit.point);
+      // Water has no single particle to hold: let the click orbit the camera instead.
+      const id = hit.soft.def.type === 'fluid' ? -1 : this.ctx.particles.grab(hit.soft, hit.point);
+      if (id < 0) return false;
+      this.particleGrab = id;
       this.showHelpers(hit.point);
       return true;
     }
@@ -117,8 +138,12 @@ export class HandTool extends Tool {
   }
 
   override onMove(p: ToolPointer): void {
-    if (Math.hypot(p.x - this.downAt.x, p.y - this.downAt.y) > 4) this.moved = true;
     if (!this.part && this.particleGrab < 0) return;
+    // A plain click (to inspect) isn't an edit: only record undo once it drags.
+    if (!this.moved && Math.hypot(p.x - this.downAt.x, p.y - this.downAt.y) > 4) {
+      this.moved = true;
+      this.ctx.checkpoint('grab', 1500);
+    }
     const ray = this.ctx.ray(p.x, p.y);
     this.target.copy(ray.origin).addScaledVector(ray.direction, this.distance);
     if (this.target.y < 0.02) this.target.y = 0.02;

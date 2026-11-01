@@ -7,13 +7,46 @@ import { degFromQuat, primitiveGeometry, quatFromDeg } from '../models/geometry'
 import { allAssets, cloneAssetNode } from '../models/assets';
 import { exportModelGLB, exportModelJSON } from '../models/export/exportModel';
 import { serializeScene, type SavedScene } from '../scenes/sceneIO';
-import { h, svgIcon } from '../ui/dom';
+import { confirmDialog, h, modal, prefs, svgIcon } from '../ui/dom';
 import { icons } from '../ui/icons';
 
 type Sel = { kind: 'part'; id: string } | { kind: 'joint'; index: number } | { kind: 'soft'; id: string };
 type V3 = [number, number, number];
 
 const JOINT_TYPES = ['hinge', 'ball', 'fixed', 'slider', 'spring', 'rope'] as const;
+type JointType = (typeof JOINT_TYPES)[number];
+
+const JOINT_INFO: Record<JointType, { label: string; tip: string }> = {
+  hinge: { label: 'Hinge', tip: 'Swings around one axis — wheels, doors, pendulums' },
+  ball: { label: 'Ball', tip: 'Swivels in every direction — ragdoll shoulders, chains' },
+  fixed: { label: 'Glue', tip: 'Locks two parts together rigidly' },
+  slider: { label: 'Slider', tip: 'Slides along one axis — pistons, drawers' },
+  spring: { label: 'Spring', tip: 'Bouncy, stretchy connection' },
+  rope: { label: 'Rope', tip: 'Holds parts within a maximum distance' },
+};
+
+// Shared by every joint marker (rebuild() runs on each edit).
+const JOINT_DOT_GEO = new THREE.SphereGeometry(0.05, 16, 12);
+const JOINT_DOT_MAT = new THREE.MeshBasicMaterial({ color: 0xff8a3d, depthTest: false });
+const HIDDEN_SHAPE_MAT = new THREE.MeshBasicMaterial({ color: 0x40c4ff, wireframe: true });
+const WATER_PREVIEW_MAT = new THREE.MeshPhysicalMaterial({ color: '#3d9be0', transparent: true, opacity: 0.55, roughness: 0.1 });
+
+/** Free what rebuild() allocated for an object it is throwing away. */
+function disposeOwned(root: THREE.Object3D): void {
+  root.traverse((o) => {
+    if (o instanceof THREE.ArrowHelper) {
+      // Its geometry is shared by every arrow; the materials are its own.
+      (o.line.material as THREE.Material).dispose();
+      (o.cone.material as THREE.Material).dispose();
+    }
+    if (o.userData.ownGeo) (o as THREE.Mesh).geometry.dispose();
+    if (o.userData.ownMat) ((o as THREE.Mesh).material as THREE.Material).dispose();
+  });
+}
+
+const SNAP_MOVE = 0.05;
+const SNAP_TURN = THREE.MathUtils.degToRad(15);
+const SNAP_SCALE = 0.1;
 
 function round(v: number): number {
   return Math.round(v * 1000) / 1000;
@@ -50,7 +83,16 @@ export class Builder {
   private testBtn: HTMLButtonElement;
   private down = { x: 0, y: 0 };
   private dragging = false;
-  private counter = 1;
+  private gizmoBtns: Record<'translate' | 'rotate' | 'scale', HTMLButtonElement>;
+  private snapBtn: HTMLButtonElement;
+  private snap = prefs.get('builder-snap') !== '0';
+  /** Guided joint creation: which joint, and the first part once picked. */
+  private jointMode: { type: JointType; a: string | null } | null = null;
+  private jointBtns = new Map<JointType, HTMLButtonElement>();
+  private banner: HTMLElement;
+  private bannerText: HTMLElement;
+  private checklist: HTMLElement;
+  private progress = { moved: false, tested: false, saved: false };
 
   constructor(private app: App) {
     this.root.name = 'builder';
@@ -104,9 +146,14 @@ export class Builder {
           prim('Jelly', () => this.addSoft('softbody')),
           prim('Water', () => this.addSoft('fluid')),
         )),
-      h('div', { class: 'bp-section' }, h('h4', {}, 'Connect selected parts'),
-        h('div', { class: 'bp-prims' }, ...JOINT_TYPES.map((t) => prim(t[0].toUpperCase() + t.slice(1), () => this.addJoint(t)))),
-        h('div', { class: 'insp-sub', style: 'margin-top:6px' }, 'Shift-click two parts, then pick a joint. One part = joint to the world.')),
+      h('div', { class: 'bp-section' }, h('h4', {}, 'Connect parts'),
+        h('div', { class: 'bp-prims' }, ...JOINT_TYPES.map((t) => {
+          const b = h('button', { title: JOINT_INFO[t].tip, onclick: () => this.startJoint(t) }, JOINT_INFO[t].label);
+          this.jointBtns.set(t, b);
+          return b;
+        })),
+        h('div', { class: 'insp-sub', style: 'margin-top:6px' }, 'Pick a joint, then click two parts — or one part and empty space to pin it to the world.')),
+      this.checklist = h('div', { class: 'bp-section bp-checklist' }),
       this.list,
       this.props,
     );
@@ -114,17 +161,32 @@ export class Builder {
     this.nameInput = h('input', { type: 'text', value: 'My model', title: 'Model name' });
     this.nameInput.addEventListener('keydown', (e) => e.stopPropagation());
     this.nameInput.addEventListener('change', () => (this.draft.name = this.nameInput.value || 'My model'));
-    this.testBtn = h('button', { class: 'btn primary', onclick: () => (this.testing ? this.stopTest() : this.startTest()) }, svgIcon(icons.play), 'Test');
+    this.testBtn = h('button', { class: 'btn primary', title: 'Drop it into the world and play with it', onclick: () => (this.testing ? this.stopTest() : this.startTest()) }, svgIcon(icons.play), 'Test');
+    const gizmo = (mode: 'translate' | 'rotate' | 'scale', icon: string, label: string, key: string) =>
+      h('button', { class: 'seg-btn', title: `${label} the selected part (${key})`, 'aria-label': label, onclick: () => this.setGizmo(mode) }, svgIcon(icon), h('span', { class: 'txt' }, label));
+    this.gizmoBtns = {
+      translate: gizmo('translate', icons.move, 'Move', 'W'),
+      rotate: gizmo('rotate', icons.rotate, 'Turn', 'E'),
+      scale: gizmo('scale', icons.scale, 'Resize', 'R'),
+    };
+    this.snapBtn = h('button', { class: 'seg-btn', title: 'Snap to 5 cm steps and 15° turns (hold Shift to toggle while dragging)', 'aria-label': 'Snap', onclick: () => this.setSnap(!this.snap) }, svgIcon(icons.magnet), h('span', { class: 'txt' }, 'Snap'));
     this.bar = h('div', { class: 'builder-bar panel hidden' },
       this.nameInput,
+      h('div', { class: 'seg' }, this.gizmoBtns.translate, this.gizmoBtns.rotate, this.gizmoBtns.scale),
+      h('div', { class: 'seg' }, this.snapBtn),
       this.testBtn,
-      h('button', { class: 'btn', onclick: () => this.save(), title: 'Save to My Models' }, svgIcon(icons.save), 'Save'),
-      h('button', { class: 'btn', onclick: () => this.exportJSON(), title: 'Download .physmodel.json' }, svgIcon(icons.download), 'JSON'),
-      h('button', { class: 'btn', onclick: () => this.exportGLB(), title: 'Download .glb with physics data (opens in Blender)' }, svgIcon(icons.download), 'GLB'),
-      h('button', { class: 'btn', onclick: () => this.newModel(), title: 'Start over' }, 'New'),
+      h('button', { class: 'btn', onclick: () => this.save(), title: 'Save to My Models in the library' }, svgIcon(icons.save), 'Save'),
+      h('button', { class: 'btn', onclick: () => this.exportMenu(), title: 'Download as a file' }, svgIcon(icons.download), 'Export'),
+      h('button', { class: 'btn', onclick: () => this.newModel(), title: 'Start a new model' }, 'New'),
       h('button', { class: 'btn', onclick: () => app.setMode('play'), title: 'Back to Play (Esc)' }, 'Done'),
     );
-    this.el = [this.panel, this.bar];
+    this.bannerText = h('span', {});
+    this.banner = h('div', { class: 'builder-banner panel hidden', role: 'status' },
+      this.bannerText,
+      h('button', { class: 'btn small', onclick: () => this.cancelJoint() }, 'Cancel'));
+    this.el = [this.panel, this.bar, this.banner];
+    this.setGizmo('translate');
+    this.setSnap(this.snap);
 
     const dom = app.view.renderer.domElement;
     dom.addEventListener('pointerdown', (e) => {
@@ -134,8 +196,15 @@ export class Builder {
     dom.addEventListener('pointerup', (e) => {
       if (!this.active || this.testing || this.dragging || e.button !== 0) return;
       if (Math.hypot(e.clientX - this.down.x, e.clientY - this.down.y) > 4) return;
-      this.pickAt(e.clientX, e.clientY, e.shiftKey);
+      if (this.jointMode) this.jointPick(e.clientX, e.clientY);
+      else this.pickAt(e.clientX, e.clientY, e.shiftKey);
     });
+    // Holding Shift flips snapping for the current drag.
+    const shiftSnap = (e: KeyboardEvent) => {
+      if (e.key === 'Shift' && this.active) this.applySnap(e.type === 'keydown' ? !this.snap : this.snap);
+    };
+    window.addEventListener('keydown', shiftSnap);
+    window.addEventListener('keyup', shiftSnap);
     window.addEventListener('keydown', (e) => this.onKey(e));
   }
 
@@ -167,6 +236,7 @@ export class Builder {
       this.draft = copy;
       this.history = [];
       this.future = [];
+      this.progress = { moved: false, tested: false, saved: false };
     }
     this.nameInput.value = this.draft.name;
     this.select(null);
@@ -176,12 +246,14 @@ export class Builder {
   exit(): void {
     if (!this.active) return;
     if (this.testing) this.stopTest();
+    this.cancelJoint();
     this.active = false;
     this.tc.detach();
     this.selBox.visible = false;
     this.root.visible = false;
     this.panel.classList.add('hidden');
     this.bar.classList.add('hidden');
+    this.banner.classList.add('hidden');
     if (this.stash) this.app.applySavedScene(this.stash, true);
     this.stash = null;
   }
@@ -207,7 +279,9 @@ export class Builder {
       this.app.toast('Add some shapes first', 'error');
       return;
     }
+    this.cancelJoint();
     this.testing = true;
+    this.progress.tested = true;
     this.tc.detach();
     this.selBox.visible = false;
     this.root.visible = false;
@@ -220,11 +294,14 @@ export class Builder {
     this.app.sim.sync(1);
     this.app.pt?.markSceneDirty();
     this.testBtn.replaceChildren(svgIcon(icons.pause), 'Stop');
-    this.app.toast('Testing — grab, throw and explode it. Press Stop to keep editing.');
+    this.app.setBuilderTesting(true);
+    this.app.toast('Testing — grab it, throw it, blow it up. Stop (or Esc) to keep editing.');
   }
 
-  private stopTest(): void {
+  stopTest(): void {
+    if (!this.testing) return;
     this.testing = false;
+    this.app.setBuilderTesting(false);
     this.app.sim.clear();
     this.app.particles?.reset();
     this.app.sim.root.visible = false;
@@ -271,10 +348,61 @@ export class Builder {
 
   // ------------------------------------------------------------------ editing ops
 
-  private spawnPoint(height: number): V3 {
+  /** World-space boxes of everything in the draft (to keep new things from overlapping). */
+  private occupied(): THREE.Box3[] {
+    this.root.updateMatrixWorld(true);
+    const out: THREE.Box3[] = [];
+    for (const [k, o] of this.objects) if (!k.startsWith('joint:')) out.push(new THREE.Box3().setFromObject(o));
+    return out;
+  }
+
+  /**
+   * Where a new thing of this size should go: on top of the selected part, or
+   * on the ground near the camera target in the first free spot.
+   * `size` is the full extent; returns the centre.
+   */
+  private placeFor(size: THREE.Vector3): V3 {
+    const boxes = this.occupied();
+    const sel = this.sel && this.sel.kind !== 'joint' ? this.objectFor(this.sel) : undefined;
+    if (sel) {
+      const b = new THREE.Box3().setFromObject(sel);
+      const c = b.getCenter(new THREE.Vector3());
+      // Stack upward until clear (something may already sit on it).
+      let y = b.max.y + size.y / 2 + 0.002;
+      for (let i = 0; i < 20; i++) {
+        const cand = new THREE.Box3().setFromCenterAndSize(new THREE.Vector3(c.x, y, c.z), size).expandByScalar(-0.001);
+        const hit = boxes.find((o) => o.intersectsBox(cand));
+        if (!hit) break;
+        y = hit.max.y + size.y / 2 + 0.002;
+      }
+      return [round(c.x), round(y), round(c.z)];
+    }
     const t = this.app.view.controls.target;
-    const k = this.counter++ % 6;
-    return [round(t.x + (k % 3) * 0.12), round(Math.max(height / 2, 0.01) + 0.02), round(t.z + Math.floor(k / 3) * 0.12)];
+    const y = size.y / 2 + 0.002;
+    const step = Math.max(size.x, size.z) + 0.1;
+    for (let ring = 0; ring < 12; ring++) {
+      const n = ring === 0 ? 1 : ring * 8;
+      for (let k = 0; k < n; k++) {
+        const a = (k / n) * Math.PI * 2;
+        const x = t.x + Math.cos(a) * ring * step;
+        const z = t.z + Math.sin(a) * ring * step;
+        const cand = new THREE.Box3().setFromCenterAndSize(new THREE.Vector3(x, y, z), size).expandByScalar(0.02);
+        if (!boxes.some((o) => o.intersectsBox(cand))) return [round(x), round(y), round(z)];
+      }
+    }
+    return [round(t.x), round(y), round(t.z)];
+  }
+
+  private shapeSize(s: ShapeDef): THREE.Vector3 {
+    if (s.type === 'mesh') {
+      const o = cloneAssetNode(s.asset, s.node);
+      if (!o) return new THREE.Vector3(0.5, 0.5, 0.5);
+      o.scale.set(...s.scale);
+      return new THREE.Box3().setFromObject(o).getSize(new THREE.Vector3());
+    }
+    const g = primitiveGeometry(s);
+    if (!g.boundingBox) g.computeBoundingBox();
+    return g.boundingBox!.getSize(new THREE.Vector3());
   }
 
   private nextId(prefix: string): string {
@@ -286,34 +414,94 @@ export class Builder {
 
   private addShapePart(shape: ShapeDef): void {
     const s = parseModel({ id: 'x', name: 'x', parts: [{ id: 'x', shapes: [shape] }] }).parts[0].shapes[0];
-    const hgt = s.type === 'box' ? s.size[1] : s.type === 'sphere' ? s.radius * 2 : s.type === 'mesh' ? 0.5 : s.height;
     const id = this.nextId('part');
+    const position = this.placeFor(this.shapeSize(s));
     this.change(() => {
-      this.draft.parts.push({ ...parseModel({ id: 'x', name: 'x', parts: [{ id, name: `${s.type[0].toUpperCase()}${s.type.slice(1)} ${id.slice(4)}`, shapes: [s], material: s.type === 'mesh' ? 'plastic-white' : 'plastic' }] }).parts[0], position: this.spawnPoint(hgt) });
+      this.draft.parts.push({ ...parseModel({ id: 'x', name: 'x', parts: [{ id, name: `${s.type[0].toUpperCase()}${s.type.slice(1)} ${id.slice(4)}`, shapes: [s], material: s.type === 'mesh' ? 'plastic-white' : 'plastic' }] }).parts[0], position });
     });
     this.select({ kind: 'part', id });
   }
 
   private addSoft(type: SoftPartDef['type']): void {
     const id = this.nextId(type === 'softbody' ? 'jelly' : type);
-    const base = { id, position: this.spawnPoint(1) as V3 };
     let def: unknown;
-    if (type === 'cloth') def = { ...base, type, position: [base.position[0], 1.6, base.position[2]], size: [1.2, 1.2], resolution: [20, 20], pins: 'top-edge' };
-    else if (type === 'softbody') def = { ...base, type, shape: 'sphere', size: [0.3, 0.3, 0.3], position: [base.position[0], 0.6, base.position[2]] };
-    else def = { ...base, type, size: [0.5, 0.5, 0.5], position: [base.position[0], 0.6, base.position[2]] };
+    if (type === 'cloth') {
+      // Cloth hangs from its top edge: give it room above the ground.
+      const p = this.placeFor(new THREE.Vector3(1.2, 1.2, 0.05));
+      def = { id, type, position: [p[0], Math.max(p[1], 1.6), p[2]], size: [1.2, 1.2], resolution: [20, 20], pins: 'top-edge' };
+    } else if (type === 'softbody') {
+      def = { id, type, shape: 'sphere', size: [0.3, 0.3, 0.3], position: this.placeFor(new THREE.Vector3(0.6, 0.6, 0.6)) };
+    } else {
+      def = { id, type, size: [0.5, 0.5, 0.5], position: this.placeFor(new THREE.Vector3(0.5, 0.5, 0.5)) };
+    }
     this.change(() => this.draft.softParts.push(def as SoftPartDef));
     this.select({ kind: 'soft', id });
   }
 
-  private addJoint(type: JointDef['type']): void {
-    const ids = [...this.multi];
-    if (this.sel?.kind === 'part' && !ids.includes(this.sel.id)) ids.unshift(this.sel.id);
-    if (!ids.length) {
-      this.app.toast('Select a part first (Shift-click to pick two)', 'error');
+  // ------------------------------------------------------------------ guided joints
+
+  /** Pick a joint type: then click part A, then part B (or empty space for the world). */
+  private startJoint(type: JointType): void {
+    if (!this.draft.parts.length) {
+      this.app.toast('Add a shape first — joints connect parts', 'error');
       return;
     }
-    const a = this.draft.parts.find((p) => p.id === ids[0])!;
-    const b = ids[1] ? this.draft.parts.find((p) => p.id === ids[1]) ?? null : null;
+    // Two parts already selected: connect them straight away.
+    const ids = [...this.multi];
+    if (this.sel?.kind === 'part' && !ids.includes(this.sel.id)) ids.unshift(this.sel.id);
+    if (ids.length >= 2) {
+      this.createJoint(type, ids[0], ids[1]);
+      return;
+    }
+    this.jointMode = { type, a: this.sel?.kind === 'part' ? this.sel.id : null };
+    this.tc.detach();
+    this.syncJointUi();
+  }
+
+  private cancelJoint(): void {
+    if (!this.jointMode) return;
+    this.jointMode = null;
+    this.syncJointUi();
+    this.select(this.sel);
+  }
+
+  private syncJointUi(): void {
+    const jm = this.jointMode;
+    for (const [t, b] of this.jointBtns) b.classList.toggle('active', jm?.type === t);
+    this.banner.classList.toggle('hidden', !jm);
+    this.app.view.renderer.domElement.style.cursor = jm ? 'crosshair' : '';
+    if (!jm) return;
+    const label = JOINT_INFO[jm.type].label;
+    const a = jm.a ? this.draft.parts.find((p) => p.id === jm.a)?.name : null;
+    this.bannerText.textContent = a
+      ? `${label}: now click the part to connect “${a}” to — or empty space to pin it to the world`
+      : `${label}: click the first part`;
+  }
+
+  private jointPick(x: number, y: number): void {
+    const jm = this.jointMode!;
+    const hit = this.hitSel(x, y);
+    if (hit && hit.kind !== 'part') {
+      this.app.toast('Joints connect solid parts — click a shape', 'error');
+      return;
+    }
+    if (!jm.a) {
+      if (!hit) return;
+      jm.a = hit.id;
+      this.sel = hit;
+      this.renderList();
+      this.syncJointUi();
+      return;
+    }
+    if (hit && hit.id === jm.a) return;
+    this.createJoint(jm.type, jm.a, hit ? hit.id : null);
+  }
+
+  private createJoint(type: JointDef['type'], aId: string, bId: string | null): void {
+    this.jointMode = null;
+    this.syncJointUi();
+    const a = this.draft.parts.find((p) => p.id === aId)!;
+    const b = bId ? this.draft.parts.find((p) => p.id === bId) ?? null : null;
     const pa = new THREE.Vector3(...a.position);
     const anchor = b ? pa.clone().add(new THREE.Vector3(...b.position)).multiplyScalar(0.5) : pa.clone().add(new THREE.Vector3(0, 0.3, 0));
     const j: JointDef = parseModel({ id: 'x', name: 'x', parts: [{ id: 'a', shapes: [{ type: 'sphere', radius: 1 }] }], joints: [{ type, a: a.id, b: b ? b.id : null, anchor: [round(anchor.x), round(anchor.y), round(anchor.z)] }] }).joints[0];
@@ -324,6 +512,7 @@ export class Builder {
     this.change(() => this.draft.joints.push(j));
     this.multi.clear();
     this.select({ kind: 'joint', index: this.draft.joints.length - 1 });
+    this.app.toast(`${JOINT_INFO[type as JointType].label} added — drag the orange dot to move where it pivots`);
   }
 
   private deleteSelected(): void {
@@ -406,8 +595,11 @@ export class Builder {
     });
   }
 
-  private newModel(): void {
-    if (this.draft.parts.length && !confirm('Start a new model? Unsaved changes are lost.')) return;
+  private async newModel(): Promise<void> {
+    const dirty = (this.draft.parts.length || this.draft.softParts.length) && !this.progress.saved;
+    if (dirty && !(await confirmDialog('Start a new model?', 'Anything you haven’t saved to the library will be lost.', { confirm: 'Start over', danger: true }))) return;
+    this.cancelJoint();
+    this.progress = { moved: false, tested: false, saved: false };
     this.draft = emptyModel();
     this.nameInput.value = this.draft.name;
     this.history = [];
@@ -433,8 +625,24 @@ export class Builder {
     await this.app.library.saveUserModel(m);
     this.draft.id = m.id;
     this.draft.name = m.name;
+    this.progress.saved = true;
+    this.renderChecklist();
     this.app.libraryPanel.refreshThumb(m.id);
     this.app.toast(`Saved “${m.name}” to My Models`);
+  }
+
+  exportMenu(): void {
+    const pick = (fn: () => void) => () => { m.close(); fn(); };
+    const body = h('div', {},
+      h('h2', {}, 'Export model'),
+      h('p', { class: 'sub' }, 'Save a copy as a file to share it or keep editing it elsewhere.'),
+      h('div', { class: 'export-choices' },
+        h('button', { class: 'export-choice', onclick: pick(() => this.exportGLB()) },
+          h('b', {}, 'Blender / 3D file (.glb)'), h('span', { class: 'insp-sub' }, 'Opens in Blender with its physics settings kept; drop it back in here to re-import.')),
+        h('button', { class: 'export-choice', onclick: pick(() => this.exportJSON()) },
+          h('b', {}, 'Model file (.physmodel.json)'), h('span', { class: 'insp-sub' }, 'Small text file with every part, joint and material.'))),
+      h('div', { class: 'footer' }, h('button', { class: 'btn', onclick: () => m.close() }, 'Cancel')));
+    const m = modal(body, { small: true });
   }
 
   private async exportJSON(): Promise<void> {
@@ -465,7 +673,10 @@ export class Builder {
 
   private rebuild(): void {
     this.tc.detach();
-    for (const o of [...this.root.children]) this.root.remove(o);
+    for (const o of [...this.root.children]) {
+      this.root.remove(o);
+      disposeOwned(o);
+    }
     this.objects.clear();
     for (const part of this.draft.parts) {
       const g = new THREE.Group();
@@ -487,7 +698,7 @@ export class Builder {
         if (!obj) continue;
         obj.position.set(...s.position);
         obj.quaternion.copy(quatFromDeg(s.rotation));
-        if (!s.visible) obj.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh) m.material = new THREE.MeshBasicMaterial({ color: 0x40c4ff, wireframe: true }); });
+        if (!s.visible) obj.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh) m.material = HIDDEN_SHAPE_MAT; });
         obj.traverse((o) => { o.castShadow = true; o.receiveShadow = true; });
         g.add(obj);
       }
@@ -498,7 +709,7 @@ export class Builder {
       const g = new THREE.Group();
       g.position.set(...j.anchor);
       g.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), new THREE.Vector3(...j.axis).normalize());
-      const ball = new THREE.Mesh(new THREE.SphereGeometry(0.05, 16, 12), new THREE.MeshBasicMaterial({ color: 0xff8a3d, depthTest: false }));
+      const ball = new THREE.Mesh(JOINT_DOT_GEO, JOINT_DOT_MAT);
       ball.renderOrder = 10;
       g.add(ball);
       if (j.type === 'hinge' || j.type === 'slider') {
@@ -508,6 +719,7 @@ export class Builder {
       if ((j.type === 'spring' || j.type === 'rope') && j.anchorB) {
         const pB = new THREE.Vector3(...j.anchorB).sub(new THREE.Vector3(...j.anchor)).applyQuaternion(g.quaternion.clone().invert());
         const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), pB]), new THREE.LineBasicMaterial({ color: 0xff8a3d }));
+        line.userData.ownGeo = line.userData.ownMat = true;
         g.add(line);
       }
       g.userData.sel = { kind: 'joint', index: i } satisfies Sel;
@@ -520,10 +732,9 @@ export class Builder {
       if (sp.type === 'cloth') geo = new THREE.PlaneGeometry(sp.size[0], sp.size[1], 8, 8);
       else if (sp.type === 'softbody') geo = sp.shape === 'box' ? new THREE.BoxGeometry(...sp.size) : sp.shape === 'torus' ? new THREE.TorusGeometry(sp.size[0], sp.size[1], 16, 32) : new THREE.SphereGeometry(1, 32, 16).scale(...sp.size);
       else geo = new THREE.BoxGeometry(...sp.size);
-      const mat = sp.type === 'fluid'
-        ? new THREE.MeshPhysicalMaterial({ color: '#3d9be0', transparent: true, opacity: 0.55, roughness: 0.1 })
-        : makeThreeMaterial(spec, { side: THREE.DoubleSide });
+      const mat = sp.type === 'fluid' ? WATER_PREVIEW_MAT : makeThreeMaterial(spec, { side: THREE.DoubleSide });
       const m = new THREE.Mesh(geo, mat);
+      m.userData.ownGeo = true;
       m.position.set(...sp.position);
       if (sp.type !== 'fluid') m.quaternion.copy(quatFromDeg(sp.rotation));
       m.userData.sel = { kind: 'soft', id: sp.id } satisfies Sel;
@@ -554,30 +765,61 @@ export class Builder {
     this.tc.detach();
     const o = s ? this.objectFor(s) : undefined;
     if (o && !this.testing) this.tc.attach(o);
-    if (s?.kind === 'joint') this.tc.setMode(this.tc.mode === 'scale' ? 'translate' : this.tc.mode);
+    if (s?.kind === 'joint' && this.tc.mode === 'scale') this.setGizmo('translate');
     this.renderList();
     this.renderProps();
   }
 
-  private pickAt(x: number, y: number, shift: boolean): void {
+  private hitSel(x: number, y: number): Sel | null {
     const ray = this.app.ray(x, y);
     const rc = new THREE.Raycaster(ray.origin, ray.direction);
-    const hits = rc.intersectObjects(this.root.children, true);
-    for (const hit of hits) {
+    for (const hit of rc.intersectObjects(this.root.children, true)) {
       let o: THREE.Object3D | null = hit.object;
       while (o && !o.userData.sel) o = o.parent;
-      if (o) {
-        this.select(o.userData.sel as Sel, shift);
-        return;
-      }
+      if (o) return o.userData.sel as Sel;
     }
-    if (!shift) this.select(null);
+    return null;
+  }
+
+  private pickAt(x: number, y: number, shift: boolean): void {
+    const s = this.hitSel(x, y);
+    if (s) this.select(s, shift);
+    else if (!shift) this.select(null);
+  }
+
+  // ------------------------------------------------------------------ gizmo
+
+  private setGizmo(mode: 'translate' | 'rotate' | 'scale'): void {
+    if (mode === 'scale' && this.sel?.kind === 'joint') return;
+    this.tc.setMode(mode);
+    for (const [k, b] of Object.entries(this.gizmoBtns)) {
+      b.classList.toggle('active', k === mode);
+      b.setAttribute('aria-pressed', String(k === mode));
+    }
+  }
+
+  private setSnap(on: boolean): void {
+    this.snap = on;
+    prefs.set('builder-snap', on ? '1' : '0');
+    this.snapBtn.classList.toggle('active', on);
+    this.snapBtn.setAttribute('aria-pressed', String(on));
+    this.applySnap(on);
+  }
+
+  private applySnap(on: boolean): void {
+    this.tc.setTranslationSnap(on ? SNAP_MOVE : null);
+    this.tc.setRotationSnap(on ? SNAP_TURN : null);
+    this.tc.setScaleSnap(on ? SNAP_SCALE : null);
   }
 
   /** Copy the gizmo transform back into the draft. */
   private commitTransform(final: boolean): void {
     const s = this.sel;
     if (!s) return;
+    if (final && !this.progress.moved) {
+      this.progress.moved = true;
+      this.renderChecklist();
+    }
     const o = this.objectFor(s);
     if (!o) return;
     const pos: V3 = [round(o.position.x), round(o.position.y), round(o.position.z)];
@@ -660,8 +902,29 @@ export class Builder {
       const s: Sel = { kind: 'soft', id: sp.id };
       items.push(h('div', { class: `bp-item${isSel(s) ? ' selected' : ''}`, onclick: () => this.select(s) }, sp.name, h('span', { class: 'tag' }, sp.type)));
     }
-    if (!items.length) items.push(h('div', { class: 'lib-empty' }, 'Add a shape to start. Drag the gizmo to move it; W/E/R switch move / rotate / scale.'));
+    if (!items.length) items.push(h('div', { class: 'lib-empty' }, 'Your model is empty — add a shape above to begin.'));
     this.list.replaceChildren(...items);
+    this.renderChecklist();
+  }
+
+  /** Five steps from nothing to a saved model; hides itself once it's all done. */
+  private renderChecklist(): void {
+    const d = this.draft;
+    const steps: [boolean, string][] = [
+      [d.parts.length + d.softParts.length > 0, 'Add shapes'],
+      [this.progress.moved, 'Move, turn or resize them with the arrows'],
+      [d.joints.length > 0 || d.parts.length === 1, 'Connect parts with a joint'],
+      [this.progress.tested, 'Press Test and play with it'],
+      [this.progress.saved, 'Save it to your library'],
+    ];
+    const done = steps.every(([ok]) => ok);
+    this.checklist.classList.toggle('hidden', done || prefs.get('builder-checklist') === 'hidden');
+    if (done) return;
+    const next = steps.findIndex(([ok]) => !ok);
+    this.checklist.replaceChildren(
+      h('h4', {}, 'Getting started',
+        h('button', { class: 'bp-hide', title: 'Hide these steps', 'aria-label': 'Hide steps', onclick: () => { prefs.set('builder-checklist', 'hidden'); this.checklist.classList.add('hidden'); } }, '×')),
+      ...steps.map(([ok, text], i) => h('div', { class: `bp-step${ok ? ' done' : ''}${i === next ? ' next' : ''}` }, h('span', { class: 'tick' }, ok ? '✓' : String(i + 1)), text)));
   }
 
   private row(label: string, ...controls: HTMLElement[]): HTMLElement {
@@ -835,6 +1098,7 @@ export class Builder {
 
   private onKey(e: KeyboardEvent): void {
     if (!this.active || this.testing) return;
+    if (document.querySelector('.modal-back, .tour-layer')) return;
     const t = e.target as HTMLElement;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA')) return;
     const mod = e.metaKey || e.ctrlKey;
@@ -851,11 +1115,14 @@ export class Builder {
     }
     if (mod) return;
     switch (e.key) {
-      case 'w': case 'W': this.tc.setMode('translate'); break;
-      case 'e': case 'E': this.tc.setMode('rotate'); break;
-      case 'r': case 'R': if (this.sel?.kind !== 'joint') this.tc.setMode('scale'); break;
+      case 'w': case 'W': this.setGizmo('translate'); break;
+      case 'e': case 'E': this.setGizmo('rotate'); break;
+      case 'r': case 'R': this.setGizmo('scale'); break;
       case 'Delete': case 'Backspace': this.deleteSelected(); break;
-      case 'Escape': if (this.sel) { e.stopImmediatePropagation(); this.select(null); } break;
+      case 'Escape':
+        if (this.jointMode) { e.stopImmediatePropagation(); this.cancelJoint(); }
+        else if (this.sel) { e.stopImmediatePropagation(); this.select(null); }
+        break;
     }
   }
 }
