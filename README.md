@@ -18,6 +18,7 @@ Switch on **ray tracing** to see the scene with physically based light.
 
 ## What you can do
 
+- **Pick it up in a minute.** A short welcome and an optional guided tour on first launch. Objects light up under the cursor, and the hint bar says what a click will do. Drag any model from the library straight into the scene. Made a mess? **Undo** (Ctrl/⌘ + Z) takes back adds, deletes, explosions, throws and scene changes.
 - **Play.** Grab and throw objects; their mass matters. You also have a cannon, explosions, an attractor beam, an eraser, slow motion and single-frame stepping.
 - **Change the physics:**
   - gravity presets for Earth, Moon, Mars, Jupiter and zero-g
@@ -25,17 +26,19 @@ Switch on **ray tracing** to see the scene with physically based light.
   - attractor-only mode
   - wind with gusts, and air drag
   - solver settings
+
+  The common ones are big buttons under **Quick settings**: gravity, wind, speed, look and ray-tracing quality. Everything else is under **Advanced**.
 - **Ray tracing.** A progressive GPU path tracer ([three-gpu-pathtracer](https://github.com/gkjohnson/three-gpu-pathtracer)) renders:
   - soft shadows from a physically sized sun
   - reflections, glass and water refraction, and emissive lights
   - depth of field: double-click to focus
   - a denoiser, and photo export
 
-  While the simulation runs it shows a fast live preview. Pause, and the image converges.
+  While the simulation runs it shows a fast live preview. Press **Render still** (or pause), and the image converges; **Save** keeps the picture. Fast / Balanced / Best quality presets.
 - **Materials.** Each preset sets both the look and the physics: steel, chrome, gold, rubber, wood, glass, diamond, ice, foam, fabric, jelly, neon and more. Choosing *steel* makes the object 7,850 kg/m³ as well as shiny.
 - **Model library.** 60+ built-in models: basics, materials, machines (motor car, Newton's cradle, pendulum, wrecking ball, windmill, catapult, chain), structures (Jenga, dominoes, brick wall, bridge, Galton board, glass tank), soft & fluid (flags, curtain, trampoline, jelly, balloon, water, hose), space (stars and planets) and fun (ragdoll, bowling, teapot).
-- **15 scenarios:** Sandbox, Newton's Cradle, Domino Run, Jenga, Bowling, Wrecking Ball, Galton Board, Orbits, Three-Body Figure-8, Dam Break, Cloth Drape, Flag in the Wind, Jelly Playground, Glass Studio and Moon Base.
-- **Model Builder.** Assemble shapes into bodies and connect them with hinge, ball, fixed, slider, spring or rope joints, including limits and motors. Add cloth, jelly or water. Test-run the model, then save it to your library or export it as `.physmodel.json` or `.glb`.
+- **16 scenes in a gallery:** Sandbox, Empty World, Newton's Cradle, Domino Run, Jenga, Bowling, Wrecking Ball, Galton Board, Orbits, Three-Body Figure-8, Dam Break, Cloth Drape, Flag in the Wind, Jelly Playground, Glass Studio and Moon Base.
+- **Model Builder.** Assemble shapes into bodies with Move / Turn / Resize handles and optional snapping (5 cm, 15°). New shapes stack on the selected part instead of overlapping. Connect parts by picking a joint (hinge, ball, glue, slider, spring or rope), then clicking two parts, or one part and empty space to pin it to the world. Joints can have limits and motors. Add cloth, jelly or water. Test-run the model with every Play tool, then save it to your library or export it as `.glb` (for Blender) or `.physmodel.json`. A checklist walks you through your first model.
 - **Blender.** Import `.glb`, `.gltf`, `.obj` and `.stl`. The [Blender add-on](blender/physics_sim_addon.py) tags objects with physics settings and joints, then exports in one click. The Mac app hot-reloads every export. See **[docs/BLENDER.md](docs/BLENDER.md)**.
 - **Save and load whole scenes** as JSON.
 
@@ -57,17 +60,22 @@ Switch on **ray tracing** to see the scene with physically based light.
 
 | Key | Action |
 |---|---|
-| `1`–`6` | Hand · Spawn · Cannon · Explode · Attract · Erase |
+| `1`–`6` | Hand · Place · Cannon · Explode · Attract · Erase |
 | `Space` / `.` | Pause / step one frame |
-| `R` | Reset scenario |
+| `Ctrl/⌘ Z` / `Ctrl/⌘ ⇧ Z` | Undo / redo |
+| `R` | Reset the scene to how it started |
 | `T` | Ray tracing on/off |
 | `B` / `Esc` | Model Builder / back to Play |
 | `L` / `G` | Library / settings |
 | `F` / `Del` | Focus / delete the selection |
 | `P` | Save an image |
-| `H` | Help |
+| `H` | Help (and replay the tour) |
 
-Drag on empty space to orbit, right-drag to pan, and scroll to zoom. While grabbing, scroll to push the object away or pull it closer.
+Drag on empty space to orbit, right-drag to pan, and scroll to zoom. While grabbing, scroll to push the object away or pull it closer. Drag a model from the library into the scene to place it exactly, or double-click it to drop it in the middle of the view.
+
+On touch screens one finger uses the current tool, and two fingers turn, pan and zoom the camera. Below 760 px wide, the library and settings open as full-width sheets.
+
+In the Builder: `W` / `E` / `R` move, turn or resize; hold `Shift` while dragging to flip snapping; `Esc` cancels a joint in progress.
 
 ## How it works
 

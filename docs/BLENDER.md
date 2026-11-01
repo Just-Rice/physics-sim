@@ -55,7 +55,7 @@ Apply the object's scale (**Ctrl+A → Scale**) for cloth and soft bodies.
 
 Press **Export for Physics Sim**. The file is written to the export folder as `<blend-file-name>.glb`.
 
-- **Mac app:** open **Settings → Blender live link → Choose watch folder…** and pick the same folder. Each export imports the model, or **reloads it in place** if it's already in your library. Every copy in the scene is replaced, so you can tweak a model in Blender and see it in the simulation seconds later.
+- **Mac app:** open **Settings → Advanced → Blender live link → Choose watch folder…** and pick the same folder. Each export imports the model, or **reloads it in place** if it's already in your library. Every copy in the scene is replaced, so you can tweak a model in Blender and see it in the simulation seconds later.
 - **Browser:** drag the `.glb` onto the app window, or use **Library → Import model**.
 
 ### Exporting without the add-on

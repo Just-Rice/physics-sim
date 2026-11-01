@@ -32,7 +32,7 @@ The code is identical, so a frame costs the same either way. The app is faster b
 ## Blender live link
 
 1. Install the Blender add-on (see [BLENDER.md](BLENDER.md)). Its default export folder is `~/Documents/Physics Sim/Blender`.
-2. The app watches that same folder from the first launch. To use another folder, go to **File → Blender Live Link Folder…** or **Settings → Blender live link**.
+2. The app watches that same folder from the first launch. To use another folder, go to **File → Blender Live Link Folder…** or **Settings → Advanced → Blender live link**.
 3. In Blender, press **Export for Physics Sim**:
    - A new file is imported into **My models**.
    - A file you've imported before is reloaded. Every placed copy in the scene is swapped for the new version, so you can model in Blender and test in the simulator side by side.
