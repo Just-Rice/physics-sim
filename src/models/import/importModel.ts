@@ -44,13 +44,26 @@ export async function loadMeshFiles(files: PickedFile[]): Promise<{ glb: ArrayBu
     for (const f of files) urls.set(f.name.split('/').pop()!, URL.createObjectURL(new Blob([f.bytes])));
     const manager = new THREE.LoadingManager();
     manager.setURLModifier((url) => urls.get(decodeURIComponent(url.split('/').pop() ?? '')) ?? url);
-    const text = new TextDecoder().decode(main.bytes);
-    const scene = await new Promise<THREE.Group>((resolve, reject) => new GLTFLoader(manager).parse(text, '', (g) => resolve(g.scene), reject));
-    // Wait for textures referenced by blob URLs
-    await new Promise((r) => setTimeout(r, 50));
-    const glb = await toGLB(scene);
-    urls.forEach((u) => URL.revokeObjectURL(u));
-    return { glb, main };
+    // Track the manager so the GLB is only written once every .bin and
+    // texture has arrived (onLoad fires when nothing is left in flight).
+    let busy = false;
+    const waiting: (() => void)[] = [];
+    manager.onStart = () => (busy = true);
+    manager.onLoad = () => {
+      busy = false;
+      waiting.splice(0).forEach((f) => f());
+    };
+    try {
+      const text = new TextDecoder().decode(main.bytes);
+      const scene = await new Promise<THREE.Group>((resolve, reject) => new GLTFLoader(manager).parse(text, '', (g) => resolve(g.scene), reject));
+      if (busy) await new Promise<void>((resolve) => {
+        waiting.push(resolve);
+        setTimeout(resolve, 15000); // never hang the import on a broken reference
+      });
+      return { glb: await toGLB(scene), main };
+    } finally {
+      urls.forEach((u) => URL.revokeObjectURL(u));
+    }
   }
   let obj: THREE.Object3D;
   if (ext === 'obj') {
@@ -134,7 +147,7 @@ export async function importFiles(app: App, files: PickedFile[], opts: { silent?
     ensureUniqueNames(root);
     const prev = (existing?.importOptions as Partial<ImportOptions> | undefined) ?? {};
     const io: ImportOptions = { ...defaultImportOptions(assetId, existing?.name ?? baseName), mode: guessMode(root), zUp: guessZUp(loaded.main.name), ...prev, assetId };
-    await commit(app, root, loaded, io, existing?.id, false);
+    await commit(app, loaded, io, existing?.id, false);
     app.toast(existing ? `Reloaded “${existing.name}” from ${loaded.main.name}` : `Imported “${baseName}”`);
     return;
   }
@@ -145,7 +158,7 @@ export async function importFiles(app: App, files: PickedFile[], opts: { silent?
   showImportDialog(app, root, loaded, io);
 }
 
-async function commit(app: App, root: THREE.Object3D, loaded: { glb: ArrayBuffer; main: PickedFile }, io: ImportOptions, keepId: string | undefined, place: boolean): Promise<ModelDef | null> {
+async function commit(app: App, loaded: { glb: ArrayBuffer; main: PickedFile }, io: ImportOptions, keepId: string | undefined, place: boolean): Promise<ModelDef | null> {
   const stored: StoredAsset = { id: io.assetId, name: loaded.main.name, bytes: loaded.glb, ext: 'glb' };
   const assetRoot = await registerStoredAsset(stored);
   let result: ReturnType<typeof objectToModel>;
@@ -287,12 +300,14 @@ function showImportDialog(app: App, root: THREE.Group, loaded: { glb: ArrayBuffe
       alive = false;
       controls.dispose();
       renderer.dispose();
+      // Browsers cap live WebGL contexts (~16); release this one right away.
+      renderer.forceContextLoss();
     },
   });
   const go = async (place: boolean) => {
     io.name = name.value.trim() || io.name;
     m.close();
-    const model = await commit(app, root, loaded, io, undefined, place);
+    const model = await commit(app, loaded, io, undefined, place);
     if (model) {
       app.libraryPanel.setTab('mine');
       app.toast(`Imported “${model.name}”${place ? ' and placed it' : ''}`);

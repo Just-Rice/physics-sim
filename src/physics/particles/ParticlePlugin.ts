@@ -3,7 +3,7 @@ import type { SimPlugin, Simulation } from '../../sim/Simulation';
 import type { Entity, PartInstance, SoftInstance } from '../../sim/types';
 import type { ParticleTools } from '../../app/context';
 import type { SettingsStore } from '../../app/settings';
-import { ParticleWorld, type StepOptions } from './ParticleWorld';
+import { FLAG_FLUID, ParticleWorld, type StepOptions } from './ParticleWorld';
 import { PROXY_STRIDE, ProxySet, ProxyType, type TrimeshData } from './collision';
 import { addEmitter, buildCloth, buildSoftBody, fillFluid, initFluidParticle, type Transform } from './builders';
 import { placementMatrix } from '../../models/instantiate';
@@ -52,6 +52,9 @@ export class ParticlePlugin implements SimPlugin, ParticleTools {
   private impulses = new Float64Array(0);
   stepper: ParticleStepper = inlineStepper;
   private lastKinetic = 0;
+  /** Particles moved since the last visual update. */
+  private dirty = true;
+  private lastTrace = false;
   lastStepMs = 0;
 
   constructor(private sim: Simulation, private settings: SettingsStore, private traceActive: () => boolean) {
@@ -97,9 +100,27 @@ export class ParticlePlugin implements SimPlugin, ParticleTools {
       return { pos: m.pos, quat: m.quat };
     })();
     let skipped = 0;
+    const before = this.world.count;
     for (const def of e.model.softParts) {
       if (!this.addSoft(e, def, T)) skipped++;
     }
+    // Thrown or fired soft parts (cannon jelly, water) keep the spawn velocity.
+    const v = e.placement.velocity;
+    if (v) {
+      const w = this.world;
+      for (let i = before; i < w.count; i++) {
+        if (w.invMass[i] === 0) continue;
+        w.vel[i * 3] = v[0];
+        w.vel[i * 3 + 1] = v[1];
+        w.vel[i * 3 + 2] = v[2];
+      }
+      for (const em of w.emitters) {
+        if (this.records.some((r) => r.owner === em.owner && r.inst.entity === e)) {
+          em.velocity = [em.velocity[0] + v[0], em.velocity[1] + v[1], em.velocity[2] + v[2]];
+        }
+      }
+    }
+    this.dirty = true;
     if (skipped) this.onBudget?.(skipped);
   }
 
@@ -196,6 +217,7 @@ export class ParticlePlugin implements SimPlugin, ParticleTools {
     }
     this.records = this.records.filter((r) => r.inst.entity !== e);
     this.reindex();
+    this.dirty = true;
   }
 
   /** After removal, find each object's new start (its particles stay contiguous). */
@@ -220,6 +242,7 @@ export class ParticlePlugin implements SimPlugin, ParticleTools {
     for (const r of this.records) r.inst.dispose();
     this.records = [];
     this.world.clear();
+    this.dirty = true;
   }
 
   // ------------------------------------------------------------------ stepping
@@ -310,17 +333,24 @@ export class ParticlePlugin implements SimPlugin, ParticleTools {
     // Attachment slots follow the current parts list
     const slotOf = new Map<PartInstance, number>();
     parts.forEach((p, i) => slotOf.set(p, i));
+    // A pin whose part was deleted lets go (its coordinates are body-local, so
+    // keeping it as a world pin would teleport the particle).
+    let dropped = false;
+    for (const r of this.records) {
+      const keep = r.attachments.filter((a) => !a.part || slotOf.has(a.part));
+      if (keep.length !== r.attachments.length) {
+        r.attachments = keep;
+        dropped = true;
+      }
+    }
+    if (dropped) this.syncAttachments();
     let ai = 0;
     for (const r of this.records) for (const a of r.attachments) {
       const wa = w.attachments[ai++];
       if (!wa) continue;
       wa.particle = a.particle;
-      wa.slot = a.part ? slotOf.get(a.part) ?? -1 : -1;
+      wa.slot = a.part ? slotOf.get(a.part)! : -1;
       wa.local = a.local;
-      if (a.part && wa.slot < 0) {
-        // Attached part was deleted: the pin becomes a free particle.
-        wa.slot = -1;
-      }
     }
     const ph = this.settings.data.physics;
     const wind = this.sim.wind;
@@ -339,6 +369,7 @@ export class ParticlePlugin implements SimPlugin, ParticleTools {
       impulses: this.impulses,
     });
     this.lastStepMs = performance.now() - t0;
+    this.dirty = true;
     // Reaction impulses back onto rigid bodies
     for (let slot = 0; slot < parts.length; slot++) {
       const o = slot * 6;
@@ -358,8 +389,14 @@ export class ParticlePlugin implements SimPlugin, ParticleTools {
 
   sync(): void {
     const w = this.world;
+    const trace = this.traceActive();
+    // Rebuilding normals and the water surface is the expensive part: only do
+    // it when particles actually moved (not every frame while paused).
+    if (!this.dirty && trace === this.lastTrace) return;
+    this.dirty = false;
+    this.lastTrace = trace;
     for (const r of this.records) if (r.mesh) r.inst.updateVisual(w.pos);
-    this.fluid.update(w, this.traceActive());
+    this.fluid.update(w, trace);
     let ke = 0;
     for (let i = 0; i < w.count; i++) ke += w.vel[i * 3] ** 2 + w.vel[i * 3 + 1] ** 2 + w.vel[i * 3 + 2] ** 2;
     this.lastKinetic = w.count ? ke / w.count : 0;
@@ -401,13 +438,28 @@ export class ParticlePlugin implements SimPlugin, ParticleTools {
     return [this.group];
   }
 
-  softFromObject(o: THREE.Object3D): SoftInstance | null {
-    while (o) {
-      if (o.userData.soft) return o.userData.soft as SoftInstance;
-      if (!o.parent) break;
-      o = o.parent;
+  softFromObject(o: THREE.Object3D, point?: THREE.Vector3): SoftInstance | null {
+    let n: THREE.Object3D | null = o;
+    while (n) {
+      if (n.userData.soft) return n.userData.soft as SoftInstance;
+      if (n === this.fluid.group && point) return this.fluidAt(point);
+      n = n.parent;
     }
     return null;
+  }
+
+  /** The water body nearest to a point on the (shared) fluid surface. */
+  private fluidAt(point: THREE.Vector3): SoftInstance | null {
+    const w = this.world;
+    let best = -1, bd = Infinity;
+    for (let i = 0; i < w.count; i++) {
+      if (!(w.flags[i] & FLAG_FLUID)) continue;
+      const d = (w.pos[i * 3] - point.x) ** 2 + (w.pos[i * 3 + 1] - point.y) ** 2 + (w.pos[i * 3 + 2] - point.z) ** 2;
+      if (d < bd) { bd = d; best = i; }
+    }
+    if (best < 0) return null;
+    const owner = w.owner[best];
+    return this.records.find((r) => r.owner === owner)?.inst ?? null;
   }
 }
 
