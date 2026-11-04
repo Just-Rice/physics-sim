@@ -562,6 +562,9 @@ button:disabled { opacity: 0.38; cursor: default; }
   .rt-toggle > div:last-child { display: none; }
   .icon-btn { width: 36px; height: 36px; }
   .library, .builder-panel { top: 54px; bottom: 6px; left: 8px; right: auto; width: min(300px, 46vw); z-index: 15; background: var(--panel-solid); }
+  .lib-head { padding: 8px 10px 6px; gap: 6px; }
+  .lib-help { display: none; }
+  .lib-actions { padding: 6px 8px; }
   #ui.building .builder-panel { top: 54px; bottom: 6px; height: auto; }
   .builder-panel { overflow-y: auto; overscroll-behavior: contain; }
   .builder-panel .bp-list { flex: none; overflow: visible; }
