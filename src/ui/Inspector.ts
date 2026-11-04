@@ -34,6 +34,7 @@ export class Inspector {
   private rVal = h('span', { class: 'num' });
   private gVal = h('span', { class: 'num' });
   private pinBtn: HTMLButtonElement;
+  private moreBtn: HTMLButtonElement;
   private lastUpdate = 0;
 
   constructor(private cb: InspectorCallbacks) {
@@ -69,8 +70,12 @@ export class Inspector {
       this.cells.set(k, v);
       this.grid.append(h('div', { class: 'k' }, k), v);
     }
+    // On phones the inspector is a small sheet: name and actions, with the
+    // numbers and sliders one tap away (CSS hides this button on desktops).
+    this.moreBtn = h('button', { class: 'btn small insp-more', 'aria-expanded': 'false', onclick: () => this.setExpanded(!this.el.classList.contains('expanded')) }, 'More');
     this.el = h('div', { class: 'inspector panel hidden', 'aria-label': 'Selected object' },
-      h('div', { class: 'insp-head' }, h('div', {}, this.title, this.sub),
+      h('div', { class: 'insp-head' }, h('div', { style: 'flex:1;min-width:0' }, this.title, this.sub),
+        this.moreBtn,
         h('button', { class: 'icon-btn', style: 'width:28px;height:28px', title: 'Close (Esc)', 'aria-label': 'Close', onclick: () => cb.onClose() }, svgIcon(icons.close))),
       this.grid,
       h('div', { class: 'insp-row' }, h('label', {}, 'Material'), this.swatch, this.matSel),
@@ -83,6 +88,12 @@ export class Inspector {
         h('button', { class: 'btn small', title: 'Point the camera at it (F)', onclick: () => this.part && cb.onFocus(this.part) }, svgIcon(icons.focus), 'Focus'),
         h('button', { class: 'btn small danger', title: 'Delete (Del)', onclick: () => this.part && cb.onDelete(this.part) }, svgIcon(icons.clear), 'Delete')),
     );
+  }
+
+  private setExpanded(on: boolean): void {
+    this.el.classList.toggle('expanded', on);
+    this.moreBtn.textContent = on ? 'Less' : 'More';
+    this.moreBtn.setAttribute('aria-expanded', String(on));
   }
 
   private setColliders(fn: (c: RAPIER.Collider) => void, v: number, label: HTMLElement): void {

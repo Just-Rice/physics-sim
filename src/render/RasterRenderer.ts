@@ -52,9 +52,14 @@ export class RasterRenderer {
   private plainGroundMat: THREE.MeshPhysicalMaterial;
   private gridGroundMat: THREE.MeshPhysicalMaterial;
 
-  constructor(readonly container: HTMLElement, private settings: SettingsStore) {
+  /** Highest pixel ratio we render at (screen density, capped at 2). */
+  readonly maxPixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+  private ratio = this.maxPixelRatio;
+
+  /** `lite`: phones and tablets get a smaller shadow map. */
+  constructor(readonly container: HTMLElement, private settings: SettingsStore, opts: { lite?: boolean } = {}) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance', preserveDrawingBuffer: false });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.setPixelRatio(this.ratio);
     this.renderer.setSize(container.clientWidth, container.clientHeight);
     this.renderer.toneMapping = THREE.NeutralToneMapping;
     this.renderer.toneMappingExposure = settings.data.render.exposure;
@@ -74,7 +79,8 @@ export class RasterRenderer {
 
     this.sun = new THREE.DirectionalLight(0xffffff, 3);
     this.sun.castShadow = true;
-    this.sun.shadow.mapSize.set(2048, 2048);
+    const shadowRes = opts.lite ? 1024 : 2048;
+    this.sun.shadow.mapSize.set(shadowRes, shadowRes);
     this.sun.shadow.bias = -0.0004;
     this.sun.shadow.normalBias = 0.02;
     this.sun.shadow.radius = 3;
@@ -102,6 +108,8 @@ export class RasterRenderer {
     this.applyGrid();
 
     window.addEventListener('resize', () => this.resize());
+    // Some mobile browsers report the new size a moment after rotating.
+    window.addEventListener('orientationchange', () => setTimeout(() => this.resize(), 250));
     settings.on((path) => {
       if (path === 'render.environment' || path === 'render.sunElevation' || path === 'render.sunAzimuth') this.applyEnvironment();
       if (path === 'render.exposure') this.renderer.toneMappingExposure = settings.data.render.exposure;
@@ -152,6 +160,19 @@ export class RasterRenderer {
     }
     this.sun.target.position.copy(t);
     this.sun.position.copy(t).addScaledVector(this.env.sunDirection, dist * 2.5);
+  }
+
+  get pixelRatio(): number {
+    return this.ratio;
+  }
+
+  /** Render at fewer pixels when the device can't keep up (adaptive resolution). */
+  setPixelRatio(r: number): void {
+    const next = Math.max(Math.min(1, this.maxPixelRatio), Math.min(this.maxPixelRatio, r));
+    if (Math.abs(next - this.ratio) < 1e-3) return;
+    this.ratio = next;
+    this.renderer.setPixelRatio(next);
+    this.resize();
   }
 
   resize(): void {

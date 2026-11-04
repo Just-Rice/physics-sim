@@ -25,6 +25,10 @@ export abstract class Tool {
   abstract readonly icon: string;
   abstract readonly key: string;
   abstract readonly hint: string;
+  /** The same hint for fingers: no hovering, right-clicks, keys or scroll wheel. */
+  get touchHint(): string {
+    return this.hint;
+  }
   /** One line shown in the toolbar tooltip. */
   abstract readonly description: string;
 

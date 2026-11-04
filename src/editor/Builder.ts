@@ -7,7 +7,7 @@ import { degFromQuat, primitiveGeometry, quatFromDeg } from '../models/geometry'
 import { allAssets, cloneAssetNode } from '../models/assets';
 import { exportModelGLB, exportModelJSON } from '../models/export/exportModel';
 import { serializeScene, type SavedScene } from '../scenes/sceneIO';
-import { confirmDialog, h, modal, prefs, svgIcon } from '../ui/dom';
+import { confirmDialog, h, isTouch, modal, prefs, svgIcon } from '../ui/dom';
 import { icons } from '../ui/icons';
 
 type Sel = { kind: 'part'; id: string } | { kind: 'joint'; index: number } | { kind: 'soft'; id: string };
@@ -43,6 +43,9 @@ function disposeOwned(root: THREE.Object3D): void {
     if (o.userData.ownMat) ((o as THREE.Mesh).material as THREE.Material).dispose();
   });
 }
+
+/** "click" or "tap", whichever the person is using. */
+const CLICK = isTouch() ? 'tap' : 'click';
 
 const SNAP_MOVE = 0.05;
 const SNAP_TURN = THREE.MathUtils.degToRad(15);
@@ -85,6 +88,8 @@ export class Builder {
   private dragging = false;
   private gizmoBtns: Record<'translate' | 'rotate' | 'scale', HTMLButtonElement>;
   private snapBtn: HTMLButtonElement;
+  private undoBtn: HTMLButtonElement;
+  private redoBtn: HTMLButtonElement;
   private snap = prefs.get('builder-snap') !== '0';
   /** Guided joint creation: which joint, and the first part once picked. */
   private jointMode: { type: JointType; a: string | null } | null = null;
@@ -99,7 +104,8 @@ export class Builder {
     this.root.visible = false;
     app.view.scene.add(this.root);
     this.tc = new TransformControls(app.view.camera, app.view.renderer.domElement);
-    this.tc.setSize(0.9);
+    // Fingers need bigger arrows to grab.
+    this.tc.setSize(isTouch() ? 1.3 : 0.9);
     const helper = this.tc.getHelper();
     app.view.helpers.add(helper);
     this.tc.addEventListener('dragging-changed', (e) => {
@@ -152,7 +158,7 @@ export class Builder {
           this.jointBtns.set(t, b);
           return b;
         })),
-        h('div', { class: 'insp-sub', style: 'margin-top:6px' }, 'Pick a joint, then click two parts — or one part and empty space to pin it to the world.')),
+        h('div', { class: 'insp-sub', style: 'margin-top:6px' }, `Pick a joint, then ${CLICK} two parts — or one part and empty space to pin it to the world.`)),
       this.checklist = h('div', { class: 'bp-section bp-checklist' }),
       this.list,
       this.props,
@@ -170,8 +176,11 @@ export class Builder {
       scale: gizmo('scale', icons.scale, 'Resize', 'R'),
     };
     this.snapBtn = h('button', { class: 'seg-btn', title: 'Snap to 5 cm steps and 15° turns (hold Shift to toggle while dragging)', 'aria-label': 'Snap', onclick: () => this.setSnap(!this.snap) }, svgIcon(icons.magnet), h('span', { class: 'txt' }, 'Snap'));
+    this.undoBtn = h('button', { class: 'seg-btn', title: 'Undo (Ctrl/⌘ Z)', 'aria-label': 'Undo', onclick: () => this.undo() }, svgIcon(icons.undo));
+    this.redoBtn = h('button', { class: 'seg-btn', title: 'Redo (Ctrl/⌘ ⇧ Z)', 'aria-label': 'Redo', onclick: () => this.redo() }, svgIcon(icons.redo));
     this.bar = h('div', { class: 'builder-bar panel hidden' },
       this.nameInput,
+      h('div', { class: 'seg' }, this.undoBtn, this.redoBtn),
       h('div', { class: 'seg' }, this.gizmoBtns.translate, this.gizmoBtns.rotate, this.gizmoBtns.scale),
       h('div', { class: 'seg' }, this.snapBtn),
       this.testBtn,
@@ -187,6 +196,7 @@ export class Builder {
     this.el = [this.panel, this.bar, this.banner];
     this.setGizmo('translate');
     this.setSnap(this.snap);
+    this.syncUndo();
 
     const dom = app.view.renderer.domElement;
     dom.addEventListener('pointerdown', (e) => {
@@ -238,6 +248,7 @@ export class Builder {
       this.future = [];
       this.progress = { moved: false, tested: false, saved: false };
     }
+    this.syncUndo();
     this.nameInput.value = this.draft.name;
     this.select(null);
     this.rebuild();
@@ -319,6 +330,12 @@ export class Builder {
     this.history.push(JSON.stringify(this.draft));
     if (this.history.length > 60) this.history.shift();
     this.future = [];
+    this.syncUndo();
+  }
+
+  private syncUndo(): void {
+    this.undoBtn.disabled = !this.history.length;
+    this.redoBtn.disabled = !this.future.length;
   }
 
   private undo(): void {
@@ -328,6 +345,7 @@ export class Builder {
     this.draft = parseModel(JSON.parse(prev));
     this.sel = null;
     this.rebuild();
+    this.syncUndo();
   }
 
   private redo(): void {
@@ -337,6 +355,7 @@ export class Builder {
     this.draft = parseModel(JSON.parse(next));
     this.sel = null;
     this.rebuild();
+    this.syncUndo();
   }
 
   private change(fn: () => void): void {
@@ -474,15 +493,15 @@ export class Builder {
     const label = JOINT_INFO[jm.type].label;
     const a = jm.a ? this.draft.parts.find((p) => p.id === jm.a)?.name : null;
     this.bannerText.textContent = a
-      ? `${label}: now click the part to connect “${a}” to — or empty space to pin it to the world`
-      : `${label}: click the first part`;
+      ? `${label}: now ${CLICK} the part to connect “${a}” to — or empty space to pin it to the world`
+      : `${label}: ${CLICK} the first part`;
   }
 
   private jointPick(x: number, y: number): void {
     const jm = this.jointMode!;
     const hit = this.hitSel(x, y);
     if (hit && hit.kind !== 'part') {
-      this.app.toast('Joints connect solid parts — click a shape', 'error');
+      this.app.toast(`Joints connect solid parts — ${CLICK} a shape`, 'error');
       return;
     }
     if (!jm.a) {
@@ -604,6 +623,7 @@ export class Builder {
     this.nameInput.value = this.draft.name;
     this.history = [];
     this.future = [];
+    this.syncUndo();
     this.select(null);
     this.rebuild();
   }
@@ -978,7 +998,9 @@ export class Builder {
     const actions = (...btns: HTMLElement[]) => h('div', { class: 'insp-actions' }, ...btns);
     if (!s) {
       if (this.multi.size > 1) out.push(actions(h('button', { class: 'btn small', onclick: () => this.mergeSelected() }, 'Merge into one body')));
-      out.push(h('div', { class: 'insp-sub' }, 'Tips: Shift-click to multi-select · Ctrl+D duplicate · Del delete · Ctrl+Z undo'));
+      out.push(h('div', { class: 'insp-sub' }, isTouch()
+        ? 'Tip: tap a part to select it, then drag the arrows to move it.'
+        : 'Tips: Shift-click to multi-select · Ctrl+D duplicate · Del delete · Ctrl+Z undo'));
       this.props.replaceChildren(...out);
       return;
     }

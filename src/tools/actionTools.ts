@@ -23,6 +23,10 @@ export class SpawnTool extends Tool {
     const m = this.ctx.library.get(this.modelId);
     return `Click to place “${m?.name ?? this.modelId}” · pick a different model in the library · Shift = drop from higher · Esc = done`;
   }
+  override get touchHint(): string {
+    const m = this.ctx.library.get(this.modelId);
+    return `Tap to place “${m?.name ?? this.modelId}” · Hand tool to stop`;
+  }
   modelId = 'crate';
   private ghost: THREE.LineSegments;
   private lastPointer: ToolPointer | null = null;
@@ -117,6 +121,10 @@ export class CannonTool extends Tool {
     const m = this.ctx.library.get(this.ctx.settings.data.tools.cannonModel);
     return `Click to fire a ${m?.name.toLowerCase() ?? 'ball'} · hold for rapid fire · change the projectile in Settings → Quick`;
   }
+  override get touchHint(): string {
+    const m = this.ctx.library.get(this.ctx.settings.data.tools.cannonModel);
+    return `Tap to fire a ${m?.name.toLowerCase() ?? 'ball'} · hold for rapid fire`;
+  }
   private firing = false;
   private pointer: ToolPointer | null = null;
   private cooldown = 0;
@@ -159,6 +167,9 @@ export class ExplodeTool extends Tool {
   readonly key = '4';
   readonly description = 'Blast everything near the click outwards';
   readonly hint = 'Click to set off an explosion · strength and radius are in Settings → Advanced → Tools';
+  override get touchHint(): string {
+    return 'Tap to set off an explosion';
+  }
 
   override onDown(p: ToolPointer): boolean {
     if (p.button !== 0) return false;
@@ -181,7 +192,16 @@ export class AttractTool extends Tool {
   readonly icon = icons.attract;
   readonly key = '5';
   readonly description = 'Hold to pull things towards the cursor (Shift pushes)';
-  readonly hint = 'Hold the mouse button to pull things towards the cursor · Shift + hold pushes them away · scroll to reach further';
+  /** Push instead of pull (the Pull / Push switch; Shift flips it for one press). */
+  push = false;
+  get hint(): string {
+    return this.push
+      ? 'Hold the mouse button to push things away · Shift + hold pulls instead · scroll to reach further'
+      : 'Hold the mouse button to pull things towards the cursor · Shift + hold pushes them away · scroll to reach further';
+  }
+  override get touchHint(): string {
+    return this.push ? 'Hold to push things away' : 'Hold to pull things in';
+  }
   private active = false;
   private repel = false;
   private target = new THREE.Vector3();
@@ -208,7 +228,7 @@ export class AttractTool extends Tool {
     this.distance = hit ? Math.min(hit.distance, 25) : 6;
     this.target.copy(ray.origin).addScaledVector(ray.direction, this.distance);
     this.active = true;
-    this.repel = p.shift;
+    this.repel = p.shift !== this.push;
     this.ring.visible = true;
     this.removeForce?.();
     const fn = (dt: number) => this.applyForce(dt);
@@ -281,6 +301,9 @@ export class EraseTool extends Tool {
   readonly key = '6';
   readonly description = 'Click something to delete it (Ctrl/⌘ + Z brings it back)';
   readonly hint = 'Click an object to delete it · Ctrl/⌘ + Z to undo';
+  override get touchHint(): string {
+    return 'Tap something to delete it · ↶ brings it back';
+  }
 
   override hover(hit: PickResult | null): HoverInfo {
     const entity = hit?.part?.entity ?? hit?.soft?.entity;

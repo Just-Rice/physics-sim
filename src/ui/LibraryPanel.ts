@@ -1,4 +1,4 @@
-import { h, svgIcon } from './dom';
+import { h, isTouch, modal, svgIcon } from './dom';
 import { icons } from './icons';
 import type { ModelLibrary } from '../models/library';
 import type { ThumbnailRenderer } from '../models/thumbnails';
@@ -48,7 +48,9 @@ export class LibraryPanel {
         h('div', { class: 'lib-title' },
           h('span', {}, 'Library'),
           h('button', { class: 'icon-btn sheet-close', title: 'Close (L)', 'aria-label': 'Close library', onclick: () => cb.onClose() }, svgIcon(icons.close))),
-        h('div', { class: 'lib-help' }, 'Drag a model into the scene — or click it, then click where it should go.'),
+        h('div', { class: 'lib-help' }, isTouch()
+          ? 'Tap a model, then tap where it should go. Hold a model for more options.'
+          : 'Drag a model into the scene — or click it, then click where it should go.'),
         h('div', { class: 'lib-tabs', role: 'tablist' }, this.tabs.builtin, this.tabs.mine),
         this.search),
       this.body,
@@ -96,17 +98,49 @@ export class LibraryPanel {
   private card(m: ModelDef, mine: boolean): HTMLElement {
     const img = h('img', { alt: '', 'data-id': m.id, draggable: false });
     this.observer.observe(img);
+    // Long-press (touch) or right-click opens the card's actions. The click that
+    // ends a long-press must not also pick the model.
+    let pressTimer = 0;
+    let longPressed = false;
+    let pressAt = { x: 0, y: 0 };
     const card = h('div', {
       class: `lib-card${m.id === this.activeId ? ' active' : ''}`,
       'data-id': m.id,
-      draggable: 'true',
+      // HTML drag and drop is mouse-only; on touch screens it fights the long-press.
+      draggable: isTouch() ? 'false' : 'true',
       tabindex: 0,
       role: 'button',
       'aria-label': m.name,
-      onclick: () => this.cb.onPick(m),
+      onclick: () => {
+        if (longPressed) {
+          longPressed = false;
+          return;
+        }
+        this.cb.onPick(m);
+      },
       ondblclick: () => this.cb.onQuickAdd(m),
     }, img, h('div', { class: 'name' }, m.name));
-    card.title = `${m.description ? m.description + '\n' : ''}Drag into the scene · double-click to drop it in view · right-click to edit${mine ? '' : ' a copy'} in Build`;
+    card.title = `${m.description ? m.description + '\n' : ''}Drag into the scene · double-click to drop it in view · right-click for more`;
+    const clearPress = () => {
+      clearTimeout(pressTimer);
+      pressTimer = 0;
+    };
+    card.addEventListener('pointerdown', (e) => {
+      if (e.pointerType !== 'touch') return;
+      longPressed = false;
+      pressAt = { x: e.clientX, y: e.clientY };
+      clearPress();
+      pressTimer = window.setTimeout(() => {
+        pressTimer = 0;
+        longPressed = true;
+        navigator.vibrate?.(10);
+        this.showActions(m, mine);
+      }, 500);
+    });
+    card.addEventListener('pointermove', (e) => {
+      if (pressTimer && Math.hypot(e.clientX - pressAt.x, e.clientY - pressAt.y) > 8) clearPress();
+    });
+    for (const type of ['pointerup', 'pointercancel', 'pointerleave', 'dragstart']) card.addEventListener(type, clearPress);
     card.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') this.cb.onQuickAdd(m);
       else if (e.key === ' ') this.cb.onPick(m);
@@ -129,9 +163,29 @@ export class LibraryPanel {
     }
     card.addEventListener('contextmenu', (e) => {
       e.preventDefault();
-      this.cb.onEdit(m);
+      // Android also fires contextmenu on a long-press: the timer already opened the sheet.
+      if (longPressed || document.querySelector('.card-actions')) return;
+      this.showActions(m, mine);
     });
     return card;
+  }
+
+  /** Everything you can do with a model, as big buttons (long-press / right-click). */
+  private showActions(m: ModelDef, mine: boolean): void {
+    if (document.querySelector('.card-actions')) return;
+    const act = (label: string, fn: () => void, cls = 'btn') =>
+      h('button', { class: cls, onclick: () => { sheet.close(); fn(); } }, label);
+    const body = h('div', { class: 'card-actions' },
+      h('h2', {}, m.name),
+      m.description ? h('p', { class: 'sub' }, m.description) : null,
+      h('div', { class: 'card-actions-list' },
+        act(isTouch() ? 'Place it — then tap the scene' : 'Place it — then click the scene', () => this.cb.onPick(m), 'btn primary'),
+        act('Drop it in the middle of the view', () => this.cb.onQuickAdd(m)),
+        act(mine ? 'Edit in Build' : 'Edit a copy in Build', () => this.cb.onEdit(m)),
+        act('Export as .glb', () => this.cb.onExport(m)),
+        mine ? act('Delete from My models', () => this.cb.onDelete(m), 'btn danger') : null),
+      h('div', { class: 'footer' }, h('button', { class: 'btn', onclick: () => sheet.close() }, 'Cancel')));
+    const sheet = modal(body, { small: true });
   }
 
   render(): void {

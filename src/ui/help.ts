@@ -1,4 +1,4 @@
-import { h, modal } from './dom';
+import { h, isTouch, modal } from './dom';
 
 const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 const mod = isMac ? '⌘' : 'Ctrl';
@@ -29,16 +29,33 @@ const mouse: [string, string][] = [
   ['Drop a file on the window', 'Import .glb .gltf .obj .stl, a model or a scene'],
 ];
 
+const touchRows: [string, string][] = [
+  ['Drag an object', 'Grab it — let go while moving to throw'],
+  ['Tap an object', 'Show its details (mass, speed, material…)'],
+  ['Drag empty space', 'Look around'],
+  ['Two fingers', 'Pinch to zoom, drag to pan and turn'],
+  ['Tap a model', 'In the library: pick it, then tap the scene to place it'],
+  ['Hold a model', 'More options: drop in view, edit in Build, export'],
+  ['↶ ↷', 'Undo / redo (bottom bar)'],
+];
+
 export function showHelp(platformKind: 'web' | 'desktop', onTour?: () => void): void {
+  const touch = isTouch();
   const grid = (rows: [string, string][]) => h('div', { class: 'help-grid' }, ...rows.flatMap(([k, d]) => [h('kbd', {}, k), h('div', {}, d)]));
+  // Phones and tablets lead with gestures; the keyboard table is still there for a paired keyboard.
+  const keyboard = touch
+    ? h('details', { class: 'help-keys' }, h('summary', {}, 'Keyboard shortcuts'), grid(keys))
+    : h('div', {}, h('h3', {}, 'Keyboard'), grid(keys));
   const body = h('div', {},
     h('h2', {}, 'Physics Sim — help'),
     h('p', { class: 'sub' }, 'Rigid bodies, joints, cloth, jelly, water and orbital gravity — with ray tracing for photo-real light.'),
     h('div', { class: 'help-cols' },
-      h('div', {}, h('h3', {}, 'Mouse & touch'), grid(mouse),
-        h('h3', {}, 'Touch screens'),
-        h('div', { class: 'insp-sub help-text' }, 'One finger uses the current tool; two fingers turn, pan and zoom the camera.')),
-      h('div', {}, h('h3', {}, 'Keyboard'), grid(keys),
+      touch
+        ? h('div', {}, h('h3', {}, 'Touch'), grid(touchRows))
+        : h('div', {}, h('h3', {}, 'Mouse & touch'), grid(mouse),
+          h('h3', {}, 'Touch screens'),
+          h('div', { class: 'insp-sub help-text' }, 'One finger uses the current tool; two fingers turn, pan and zoom the camera.')),
+      h('div', {}, keyboard,
         h('h3', {}, 'Ray tracing'),
         h('div', { class: 'insp-sub help-text' },
           'Turn it on for soft shadows, reflections, glass and glowing lights. While things move you see a quick, grainy preview; ',

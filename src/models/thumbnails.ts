@@ -94,6 +94,11 @@ export class ThumbnailRenderer {
     if (this.busy) return;
     this.busy = true;
     const step = () => {
+      // While the browser has taken the GPU away, wait instead of caching blank pictures.
+      if (this.renderer.getContext().isContextLost()) {
+        setTimeout(() => requestAnimationFrame(step), 500);
+        return;
+      }
       const job = this.queue.shift();
       if (!job) {
         this.busy = false;

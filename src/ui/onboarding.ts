@@ -1,4 +1,4 @@
-import { h, modal, prefs, svgIcon } from './dom';
+import { h, isTouch, modal, prefs, svgIcon } from './dom';
 import { icons } from './icons';
 
 const SEEN_KEY = 'onboarded-v1';
@@ -15,6 +15,7 @@ export interface TourStep {
 export function maybeShowWelcome(steps: () => TourStep[], force = false): void {
   if (!force && prefs.get(SEEN_KEY)) return;
   prefs.set(SEEN_KEY, '1');
+  const touch = isTouch();
   const tile = (icon: string, title: string, text: string) =>
     h('div', { class: 'welcome-tile' }, h('div', { class: 'welcome-icon' }, svgIcon(icon)), h('div', {}, h('b', {}, title), h('div', { class: 'insp-sub' }, text)));
   const body = h('div', { class: 'welcome' },
@@ -22,12 +23,18 @@ export function maybeShowWelcome(steps: () => TourStep[], force = false): void {
     h('h2', {}, 'Welcome to Physics Sim'),
     h('p', { class: 'sub' }, 'A sandbox for throwing, stacking, smashing and building things — with real physics and photo-real light.'),
     h('div', { class: 'welcome-grid' },
-      tile(icons.hand, 'Grab & throw', 'Drag any object with the mouse. Let go while moving to throw it.'),
-      tile(icons.library, 'Add things', 'Drag a model from the library into the scene — or click it, then click where it goes.'),
+      tile(icons.hand, 'Grab & throw', touch
+        ? 'Drag any object with your finger. Let go while moving to throw it. Two fingers move the camera.'
+        : 'Drag any object with the mouse. Let go while moving to throw it.'),
+      tile(icons.library, 'Add things', touch
+        ? 'Open the library, tap a model, then tap where it should go.'
+        : 'Drag a model from the library into the scene — or click it, then click where it goes.'),
       tile(icons.sparkle, 'Ray tracing', 'Flip the switch for realistic light. Pause to let the picture sharpen.'),
       tile(icons.spawn, 'Build your own', 'Snap shapes together with hinges and motors, or import from Blender.'),
     ),
-    h('p', { class: 'insp-sub', style: 'margin-top:12px' }, 'Made a mess? Ctrl/⌘ + Z undoes it. Press H any time for help.'),
+    h('p', { class: 'insp-sub', style: 'margin-top:12px' }, touch
+      ? 'Made a mess? The Undo arrow at the bottom takes it back. Help is behind the ? button.'
+      : 'Made a mess? Ctrl/⌘ + Z undoes it. Press H any time for help.'),
     h('div', { class: 'footer' },
       h('button', { class: 'btn', onclick: () => { m.close(); startTour(steps()); } }, 'Show me around'),
       h('button', { class: 'btn primary', onclick: () => m.close() }, 'Start playing')),

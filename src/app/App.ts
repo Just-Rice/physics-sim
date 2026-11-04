@@ -5,6 +5,7 @@ import { History } from './history';
 import { initRapier, RAPIER } from '../physics/RigidWorld';
 import { Simulation } from '../sim/Simulation';
 import { RasterRenderer } from '../render/RasterRenderer';
+import { device } from './device';
 import { PathTracer, pathTracingUnsupportedReason } from '../render/PathTracer';
 import { Flashes, SelectionBox, Trails } from '../render/effects';
 import { ModelLibrary } from '../models/library';
@@ -19,7 +20,7 @@ import { LibraryPanel, MODEL_DRAG_TYPE } from '../ui/LibraryPanel';
 import { BottomBar } from '../ui/BottomBar';
 import { Inspector } from '../ui/Inspector';
 import { SettingsPanel } from '../ui/SettingsPanel';
-import { Toasts, confirmDialog, h, svgIcon } from '../ui/dom';
+import { Toasts, confirmDialog, h, isTouch, prefs, svgIcon } from '../ui/dom';
 import { icons } from '../ui/icons';
 import { showHelp } from '../ui/help';
 import { maybeShowWelcome, startTour, type TourStep } from '../ui/onboarding';
@@ -86,6 +87,9 @@ export class App implements AppContext {
   private rtSave!: HTMLButtonElement;
   private rtQuality!: HTMLSelectElement;
   private hintEl!: HTMLElement;
+  private hintText!: HTMLElement;
+  /** Per-tool switches next to the hint (Attract: Pull / Push). */
+  private toolOpts!: HTMLElement;
   private pausedEl!: HTMLElement;
   private timer = new THREE.Timer();
   private fps = 60;
@@ -97,6 +101,9 @@ export class App implements AppContext {
   /** What "Reset" returns to: a scenario, or the last scene file that was opened. */
   private resetPoint: SavedScene | null = null;
   private libraryWasOpen = true;
+  private contextLost = false;
+  private hintFadeTimer = 0;
+  private adapt = { low: 0, high: 0, cooldown: 0 };
   /** The Builder's Test run is going: Play-style tools and time controls apply. */
   private builderTesting = false;
   mode: 'play' | 'build' = 'play';
@@ -110,6 +117,12 @@ export class App implements AppContext {
       // The Mac app defaults to higher quality.
       s.raytracing.liveRenderScale = 0.6;
       s.particles.maxParticles = 12000;
+    } else if (device.mobile) {
+      // Phones and tablets: lighter defaults so it stays smooth (and cool).
+      const fast = RT_PRESETS.fast;
+      Object.assign(s.raytracing, { bounces: fast.bounces, transmissiveBounces: fast.transmissiveBounces, renderScale: fast.renderScale, maxSamples: fast.maxSamples, liveRenderScale: 0.25 });
+      if (device.phone) s.particles.maxParticles = 4000;
+      s.particles.threads = Math.max(1, Math.min(3, (navigator.hardwareConcurrency || 4) - 1));
     }
     this.settings = new SettingsStore(s);
   }
@@ -127,8 +140,9 @@ export class App implements AppContext {
 
     this.status('Starting renderer…');
     const viewport = document.getElementById('viewport')!;
-    this.view = new RasterRenderer(viewport, this.settings);
+    this.view = new RasterRenderer(viewport, this.settings, { lite: device.mobile });
     this.ptUnsupported = pathTracingUnsupportedReason(this.view.renderer);
+    this.watchContextLoss();
     this.sim = new Simulation(this.settings);
     this.view.scene.add(this.sim.root);
     this.flashes = new Flashes(this.view.helpers);
@@ -250,7 +264,16 @@ export class App implements AppContext {
     this.rtQuality.addEventListener('keydown', (e) => e.stopPropagation());
     this.rtBadge = h('div', { class: 'rt-badge panel', role: 'status' }, this.rtText, h('div', { class: 'bar' }, this.rtBar), this.rtStill, this.rtSave, this.rtQuality);
 
-    this.hintEl = h('div', { class: 'hint panel', role: 'status' });
+    this.hintText = h('span', { class: 'hint-text' });
+    const pullPush = (push: boolean, label: string) => h('button', {
+      class: 'seg-btn', 'data-push': String(push),
+      onclick: () => {
+        this.tools.attract.push = push;
+        this.updateHint();
+      },
+    }, label);
+    this.toolOpts = h('div', { class: 'seg tool-opts', role: 'group', 'aria-label': 'Attract mode' }, pullPush(false, 'Pull'), pullPush(true, 'Push'));
+    this.hintEl = h('div', { class: 'hint panel', role: 'status' }, this.hintText, this.toolOpts);
     this.pausedEl = h('button', { class: 'paused-pill panel', title: 'Resume (Space)', onclick: () => this.togglePause() },
       svgIcon(icons.play), h('span', {}, 'Paused'), h('span', { class: 'insp-sub' }, 'Space to resume'));
 
@@ -265,11 +288,22 @@ export class App implements AppContext {
   }
 
   private tourSteps(): TourStep[] {
+    const touch = isTouch();
+    // On a phone the library is a full-screen sheet: close it again after its step.
+    const closeSheet = () => {
+      if (this.narrow) this.toggleLibrary(false);
+    };
     return [
-      { target: '.library', title: 'Add things', text: 'Drag any model into the scene. Or click one, then click where it should go. Double-click drops it in the middle of the view.', before: () => this.toggleLibrary(true) },
-      { target: '.toolbar', title: 'Tools', text: 'Hand grabs and throws (drag an object). Place puts down library models. Cannon fires, Explode blasts, Attract pulls, Erase removes. Keys 1–6 switch tools.' },
-      { target: '.scene-btn', title: 'Ready-made scenes', text: 'Dominoes, a dam break, flags in the wind, planets in orbit, a glass studio… pick one here.' },
-      { target: '.rt-toggle', title: 'Ray tracing', text: 'Realistic light: soft shadows, reflections and glass. It is grainy while things move; press Render still (or Space) to let it sharpen.' },
+      { target: '.library', title: 'Add things', text: touch
+        ? 'Tap a model, then tap where it should go. Hold a model for more options.'
+        : 'Drag any model into the scene. Or click one, then click where it should go. Double-click drops it in the middle of the view.', before: () => this.toggleLibrary(true) },
+      { target: '.toolbar', title: 'Tools', text: touch
+        ? 'Hand grabs and throws (drag an object). Place puts down library models. Cannon fires, Explode blasts, Attract pulls, Erase removes.'
+        : 'Hand grabs and throws (drag an object). Place puts down library models. Cannon fires, Explode blasts, Attract pulls, Erase removes. Keys 1–6 switch tools.', before: closeSheet },
+      { target: '.scene-btn', title: 'Ready-made scenes', text: 'Dominoes, a dam break, flags in the wind, planets in orbit, a glass studio… pick one here.', before: closeSheet },
+      { target: '.rt-toggle', title: 'Ray tracing', text: touch
+        ? 'Realistic light: soft shadows, reflections and glass. It is grainy while things move; pause to let it sharpen. Heavy on phones.'
+        : 'Realistic light: soft shadows, reflections and glass. It is grainy while things move; press Render still (or Space) to let it sharpen.' },
       { target: '.settings-btn', title: 'Settings', text: 'Change gravity (try the Moon or Orbits), wind, slow motion and the lighting. The detailed knobs are under Advanced.' },
       { target: '.bottombar', title: 'Time & undo', text: 'Pause, step a frame, slow motion — and Undo if you knock something over. Reset puts the scene back how it started.' },
       { target: '.mode-switch', title: 'Build your own', text: 'Build mode lets you join shapes with hinges, springs and motors, test them, and save them to your library.' },
@@ -286,16 +320,30 @@ export class App implements AppContext {
       return;
     }
     this.hintEl.style.display = '';
-    const text = override ?? (this.tools.active as unknown as { hint: string }).hint;
-    if (this.hintEl.textContent !== text) this.hintEl.textContent = text;
+    const text = (this.tools.usingTouch ? undefined : override) ?? this.tools.hint;
+    if (this.hintText.textContent !== text) {
+      this.hintText.textContent = text;
+      // Phones: the hint covers the scene, so it fades once it has been read.
+      this.hintEl.classList.remove('faded');
+      clearTimeout(this.hintFadeTimer);
+      if (this.narrow) this.hintFadeTimer = window.setTimeout(() => this.hintEl.classList.add('faded'), 6000);
+    }
+    const attract = this.tools.active === this.tools.attract;
+    this.hintEl.classList.toggle('has-opts', attract);
+    for (const b of this.toolOpts.querySelectorAll<HTMLElement>('.seg-btn')) {
+      const on = attract && (b.dataset.push === 'true') === this.tools.attract.push;
+      b.classList.toggle('active', on);
+      b.setAttribute('aria-pressed', String(on));
+    }
   }
 
   toast(message: string, kind: 'info' | 'error' = 'info'): void {
     this.toasts.show(message, kind);
   }
 
+  /** Phones (and short landscape windows): panels are sheets over the scene. */
   private get narrow(): boolean {
-    return window.innerWidth <= 760;
+    return window.innerWidth <= 760 || window.innerHeight <= 500;
   }
 
   toggleSettings(force?: boolean): void {
@@ -886,13 +934,20 @@ export class App implements AppContext {
       }
       this.ptLoading = false;
     }
+    // The path tracer works from the canvas size: give it full resolution.
+    if (on) this.view.setPixelRatio(this.view.maxPixelRatio);
     this.settings.set('raytracing', 'enabled', on);
     this.pt?.markSceneDirty();
     this.pt?.markMaterialsDirty();
     this.pt?.markEnvironmentDirty();
     this.pt?.reset();
     this.syncRayTracingUi();
-    if (on) this.toast('Ray tracing on — press Render still (or Space) for a sharp picture');
+    if (on && device.mobile && !prefs.get('rt-mobile-note')) {
+      prefs.set('rt-mobile-note', '1');
+      this.toast('Ray tracing is heavy on phones: Fast quality is picked, and it may run warm. Pause for a sharp picture.');
+    } else if (on) {
+      this.toast(isTouch() ? 'Ray tracing on — pause for a sharp picture' : 'Ray tracing on — press Render still (or Space) for a sharp picture');
+    }
   }
 
   /** Pause and let the ray tracer converge. */
@@ -1032,10 +1087,64 @@ export class App implements AppContext {
     return this.particles?.active() ?? false;
   }
 
+  /**
+   * Mobile browsers drop the WebGL context when a tab is backgrounded or
+   * memory runs low. three.js restores its own state; the ray tracer is
+   * rebuilt on demand.
+   */
+  private watchContextLoss(): void {
+    const canvas = this.view.renderer.domElement;
+    canvas.addEventListener('webglcontextlost', () => {
+      this.contextLost = true;
+      if (this.settings.data.raytracing.enabled) this.settings.set('raytracing', 'enabled', false);
+      this.pt?.dispose();
+      this.pt = null;
+      this.syncRayTracingUi();
+      this.toast('Graphics were reset by the browser — back in a moment');
+    });
+    canvas.addEventListener('webglcontextrestored', () => {
+      this.contextLost = false;
+      this.toast('Graphics are back');
+    });
+  }
+
+  /**
+   * Adaptive resolution: render fewer pixels while the device can't hold
+   * ~40 fps, and go back up once it has headroom. Off while ray tracing
+   * (its own resolution setting covers that).
+   */
+  private adaptResolution(dt: number): void {
+    const a = this.adapt;
+    a.cooldown = Math.max(0, a.cooldown - dt);
+    if (this.settings.data.raytracing.enabled || document.hidden || this.contextLost) {
+      a.low = a.high = 0;
+      return;
+    }
+    if (this.fps < 40) {
+      a.low += dt;
+      a.high = 0;
+    } else if (this.fps > 57) {
+      a.high += dt;
+      a.low = 0;
+    } else {
+      a.low = a.high = 0;
+    }
+    const r = this.view.pixelRatio;
+    if (a.low > 2 && r > Math.min(1, this.view.maxPixelRatio)) {
+      this.view.setPixelRatio(r - 0.25);
+      a.low = 0;
+      a.cooldown = 20; // don't bounce straight back up
+    } else if (a.high > 5 && a.cooldown === 0 && r < this.view.maxPixelRatio) {
+      this.view.setPixelRatio(r + 0.25);
+      a.high = 0;
+    }
+  }
+
   private frame(): void {
     this.timer.update();
     const dt = Math.min(this.timer.getDelta(), 0.1);
     this.fps = this.fps * 0.95 + (1 / Math.max(dt, 1e-4)) * 0.05;
+    this.adaptResolution(dt);
 
     if (this.mode === 'play') this.simulateFrame(dt);
     else this.builder?.update(dt);

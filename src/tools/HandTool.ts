@@ -16,6 +16,9 @@ export class HandTool extends Tool {
   readonly icon = icons.hand;
   readonly key = '1';
   readonly hint = 'Drag an object to grab and throw it · click to inspect · drag empty space to look around';
+  override get touchHint(): string {
+    return 'Drag things to throw them · tap to inspect · two fingers move the camera';
+  }
   readonly description = 'Grab, throw and inspect objects';
 
   override hover(hit: PickResult | null): HoverInfo {

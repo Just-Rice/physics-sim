@@ -60,6 +60,11 @@ export function confirmDialog(title: string, message: string, opts: { confirm?: 
   });
 }
 
+/** A finger (not a mouse) is the main pointer: phones and most tablets. */
+export function isTouch(): boolean {
+  return typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+}
+
 /** localStorage that never throws (private windows, blocked storage, previews). */
 export const prefs = {
   get(key: string): string | null {

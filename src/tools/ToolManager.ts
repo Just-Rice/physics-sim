@@ -3,6 +3,7 @@ import type { HoverInfo, Tool, ToolPointer } from './Tool';
 import { HandTool } from './HandTool';
 import { AttractTool, CannonTool, EraseTool, ExplodeTool, SpawnTool } from './actionTools';
 import { Highlighter } from '../render/highlight';
+import { isTouch } from '../ui/dom';
 
 /**
  * Routes pointer events from the canvas to the active tool, arbitrates with
@@ -12,6 +13,7 @@ export class ToolManager {
   readonly tools: Tool[];
   active: Tool;
   readonly spawn: SpawnTool;
+  readonly attract: AttractTool;
   private consumed = false;
   private primaryPointer: number | null = null;
   private touches = new Set<number>();
@@ -22,10 +24,13 @@ export class ToolManager {
   private lastHover = 0;
   private highlighter = new Highlighter();
   private _enabled = true;
+  /** What the person last used: decides between mouse and touch wording. */
+  private lastPointerType: string | null = null;
 
   constructor(private ctx: AppContext, private dom: HTMLElement) {
     this.spawn = new SpawnTool(ctx);
-    this.tools = [new HandTool(ctx), this.spawn, new CannonTool(ctx), new ExplodeTool(ctx), new AttractTool(ctx), new EraseTool(ctx)];
+    this.attract = new AttractTool(ctx);
+    this.tools = [new HandTool(ctx), this.spawn, new CannonTool(ctx), new ExplodeTool(ctx), this.attract, new EraseTool(ctx)];
     this.active = this.tools[0];
 
     // Capture phase so a consumed press disables OrbitControls before it sees the event.
@@ -73,6 +78,22 @@ export class ToolManager {
     this.listeners.forEach((l) => l(t));
   }
 
+  /** True when the person is using a finger right now (or the device is touch-first). */
+  get usingTouch(): boolean {
+    return this.lastPointerType ? this.lastPointerType === 'touch' : isTouch();
+  }
+
+  /** Hint for the active tool in the right words for mouse or touch. */
+  get hint(): string {
+    return this.usingTouch ? this.active.touchHint : this.active.hint;
+  }
+
+  private notePointer(type: string): void {
+    if (type === this.lastPointerType) return;
+    this.lastPointerType = type;
+    this.hoverListeners.forEach((l) => l(null));
+  }
+
   private ptr(e: PointerEvent): ToolPointer {
     return { x: e.clientX, y: e.clientY, button: e.button, shift: e.shiftKey, alt: e.altKey };
   }
@@ -89,6 +110,7 @@ export class ToolManager {
 
   private down(e: PointerEvent): void {
     if (e.pointerType === 'touch') this.touches.add(e.pointerId);
+    this.notePointer(e.pointerType);
     if (!this._enabled) return;
     // A second finger means a pinch / two-finger orbit: hand it to the camera.
     if (this.primaryPointer !== null || this.touches.size > 1) {
@@ -134,6 +156,7 @@ export class ToolManager {
 
   private hoverMove(e: PointerEvent): void {
     if (!this._enabled || e.pointerType === 'touch') return;
+    this.notePointer(e.pointerType);
     this.hoverPointer = this.ptr(e);
     this.hoverDirty = true;
     // Tools like Place want every move (ghost outline), even without a press.
