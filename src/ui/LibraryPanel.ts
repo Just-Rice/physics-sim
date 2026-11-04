@@ -134,7 +134,7 @@ export class LibraryPanel {
         pressTimer = 0;
         longPressed = true;
         navigator.vibrate?.(10);
-        this.showActions(m, mine);
+        this.showActions(m, mine, true);
       }, 500);
     });
     card.addEventListener('pointermove', (e) => {
@@ -171,7 +171,7 @@ export class LibraryPanel {
   }
 
   /** Everything you can do with a model, as big buttons (long-press / right-click). */
-  private showActions(m: ModelDef, mine: boolean): void {
+  private showActions(m: ModelDef, mine: boolean, viaLongPress = false): void {
     if (document.querySelector('.card-actions')) return;
     const act = (label: string, fn: () => void, cls = 'btn') =>
       h('button', { class: cls, onclick: () => { sheet.close(); fn(); } }, label);
@@ -186,6 +186,17 @@ export class LibraryPanel {
         mine ? act('Delete from My models', () => this.cb.onDelete(m), 'btn danger') : null),
       h('div', { class: 'footer' }, h('button', { class: 'btn', onclick: () => sheet.close() }, 'Cancel')));
     const sheet = modal(body, { small: true });
+    if (viaLongPress) {
+      // The sheet opens under the finger: lifting it must not "click" whatever
+      // button ended up below. Buttons wake up on a fresh touch inside the sheet.
+      let armed = false;
+      sheet.el.addEventListener('pointerdown', () => (armed = true), true);
+      sheet.el.addEventListener('click', (e) => {
+        if (armed || e.detail === 0) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+      }, true);
+    }
   }
 
   render(): void {

@@ -103,7 +103,7 @@ export class App implements AppContext {
   private libraryWasOpen = true;
   private contextLost = false;
   private hintFadeTimer = 0;
-  private adapt = { low: 0, high: 0, cooldown: 0 };
+  private adapt = { low: 0, high: 0, cooldown: 0, lastUp: -Infinity };
   /** The Builder's Test run is going: Play-style tools and time controls apply. */
   private builderTesting = false;
   mode: 'play' | 'build' = 'play';
@@ -1110,7 +1110,7 @@ export class App implements AppContext {
 
   /**
    * Adaptive resolution: render fewer pixels while the device can't hold
-   * ~40 fps, and go back up once it has headroom. Off while ray tracing
+   * ~40 fps, and go back up once it holds ~55+. Off while ray tracing
    * (its own resolution setting covers that).
    */
   private adaptResolution(dt: number): void {
@@ -1123,20 +1123,24 @@ export class App implements AppContext {
     if (this.fps < 40) {
       a.low += dt;
       a.high = 0;
-    } else if (this.fps > 57) {
+    } else if (this.fps > 55) {
       a.high += dt;
       a.low = 0;
     } else {
       a.low = a.high = 0;
     }
     const r = this.view.pixelRatio;
+    const now = performance.now();
     if (a.low > 2 && r > Math.min(1, this.view.maxPixelRatio)) {
       this.view.setPixelRatio(r - 0.25);
       a.low = 0;
-      a.cooldown = 20; // don't bounce straight back up
+      // Don't bounce straight back up; if the last step up was just undone,
+      // that level is too much for this device, so wait much longer.
+      a.cooldown = now - a.lastUp < 15000 ? 120 : 20;
     } else if (a.high > 5 && a.cooldown === 0 && r < this.view.maxPixelRatio) {
       this.view.setPixelRatio(r + 0.25);
       a.high = 0;
+      a.lastUp = now;
     }
   }
 

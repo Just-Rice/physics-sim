@@ -90,7 +90,9 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
 /* ---------- Top bar ---------- */
 .topbar {
   position: absolute; top: 12px; left: 12px; right: 12px;
-  display: flex; align-items: center; gap: 10px; pointer-events: none;
+  display: flex; align-items: center; gap: 10px;
+  /* The gaps between the groups belong to the 3D view (beats `#ui > *`). */
+  pointer-events: none !important;
 }
 .topbar > * { pointer-events: auto; }
 .brand {
@@ -143,7 +145,8 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
   position: absolute; top: 68px; left: 12px; bottom: 72px; width: 280px;
   display: flex; flex-direction: column; overflow: hidden; transition: transform 0.2s, opacity 0.2s;
 }
-.library.collapsed { transform: translateX(-110%); opacity: 0; pointer-events: none; visibility: hidden; transition: transform 0.2s, opacity 0.2s, visibility 0s 0.2s; }
+/* !important: `#ui > *` would otherwise keep a closing sheet tappable until its slide-out ends. */
+.library.collapsed { transform: translateX(-110%); opacity: 0; pointer-events: none !important; visibility: hidden; transition: transform 0.2s, opacity 0.2s, visibility 0s 0.2s; }
 .lib-head { padding: 12px 12px 8px; display: flex; flex-direction: column; gap: 8px; border-bottom: 1px solid var(--panel-border); }
 .lib-title { display: flex; justify-content: space-between; align-items: center; font-weight: 650; }
 .lib-tabs { display: flex; gap: 4px; }
@@ -193,7 +196,8 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
 .stats b { color: var(--text); font-weight: 500; }
 
 .hint {
-  position: absolute; bottom: 70px; left: 50%; transform: translateX(-50%);
+  /* Centred with auto margins (left:50% would cap its width at half the screen). */
+  position: absolute; bottom: 70px; left: 0; right: 0; margin: 0 auto; width: max-content; max-width: calc(100% - 16px);
   padding: 6px 12px; font-size: 12px; color: var(--text-dim); white-space: nowrap; pointer-events: none !important;
   display: flex; align-items: center; gap: 10px; justify-content: center;
 }
@@ -505,7 +509,7 @@ button:disabled { opacity: 0.38; cursor: default; }
   .bottombar .icon-btn { width: 36px; height: 36px; }
   .time-scale .lbl, .time-scale .val { display: none; }
   .time-scale input { width: 70px; }
-  .hint { bottom: 64px; max-width: calc(100vw - 16px); white-space: normal; text-align: center; z-index: 1; }
+  .hint { bottom: 64px; max-width: calc(100% - 16px); white-space: normal; text-align: center; z-index: 1; }
   .lib-grid { grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); }
   .rt-badge { top: 108px; max-width: calc(100vw - 16px); flex-wrap: wrap; }
   .paused-pill { top: 108px; }
@@ -514,7 +518,7 @@ button:disabled { opacity: 0.38; cursor: default; }
   .welcome-mark { display: none; }
   .help-cols { grid-template-columns: 1fr; }
   /* Long modals scroll, but their buttons stay in reach. */
-  .modal .footer { position: sticky; bottom: -18px; margin: 12px -20px -18px; padding: 10px 20px 14px; background: var(--panel-solid); border-top: 1px solid var(--panel-border); }
+  .modal .footer { flex-wrap: wrap; position: sticky; bottom: -18px; margin: 12px -20px -18px; padding: 10px 20px 14px; background: var(--panel-solid); border-top: 1px solid var(--panel-border); }
   .hint { transition: opacity 0.6s; }
   .hint.faded:not(.has-opts) { opacity: 0; }
   .hint.faded.has-opts .hint-text { display: none; }
@@ -548,6 +552,11 @@ button:disabled { opacity: 0.38; cursor: default; }
   .tool-btn .txt { display: none; }
   /* Help moves into the settings sheet's header. */
   .topbar .help-btn { display: none; }
+}
+/* Very small phones (iPhone SE, 320 px): the step button goes, the speed slider shrinks. */
+@media (max-width: 360px) {
+  .bottombar [aria-label="Step one frame"] { display: none; }
+  .time-scale input { width: 56px; }
 }
 /* Landscape phones: very little height. One row on top, side sheets, slim bottom bar. */
 @media (max-height: 500px) {
