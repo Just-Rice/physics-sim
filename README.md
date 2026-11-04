@@ -44,7 +44,7 @@ Switch on **ray tracing** to see the scene with physically based light.
 
 ## Get it
 
-- **Web:** once GitHub Pages is enabled (see *Hosting* below), the app is at `https://just-rice.github.io/physics-sim/`. Run it locally with the commands below, then open the URL Vite prints.
+- **Web — desktop, phone or tablet:** **<https://just-rice.github.io/physics-sim/>** (once GitHub Pages is enabled; see *Hosting* below). On a phone, use **Share → Add to Home Screen** (iPhone) or **⋮ → Install app** (Android) and it opens full-screen like an app. To run it locally, use the commands below, then open the URL Vite prints.
 
   ```bash
   npm ci
@@ -73,7 +73,7 @@ Switch on **ray tracing** to see the scene with physically based light.
 
 Drag on empty space to orbit, right-drag to pan, and scroll to zoom. While grabbing, scroll to push the object away or pull it closer. Drag a model from the library into the scene to place it exactly, or double-click it to drop it in the middle of the view.
 
-On touch screens one finger uses the current tool, and two fingers turn, pan and zoom the camera. Below 760 px wide, the library and settings open as full-width sheets.
+**On phones and tablets** one finger uses the current tool and two fingers turn, pan and zoom the camera. Tap a model in the library, then tap where it should go; hold a model for more options (drop it in view, edit it in Build, export). Undo and redo are the arrows in the bottom bar, and Attract has a Pull / Push switch. The layout follows the screen: sheets on narrow phones, side panels in landscape, clear of the notch and home bar. Phones start with lighter settings (fewer particles, Fast ray tracing), and the resolution drops automatically if a device can't keep up, then climbs back when it can. Saved pictures go through the share sheet, so you can save them straight to Photos.
 
 In the Builder: `W` / `E` / `R` move, turn or resize; hold `Shift` while dragging to flip snapping; `Esc` cancels a joint in progress.
 
