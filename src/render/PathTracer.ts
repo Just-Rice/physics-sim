@@ -6,6 +6,10 @@ import type { SettingsStore } from '../app/settings';
 
 type PTModule = typeof import('three-gpu-pathtracer');
 
+function materialUuids(materials: THREE.Material[] | undefined): string[] {
+  return (materials ?? []).map((m) => m.uuid);
+}
+
 /** Reasons the GPU can't run the path tracer, or null if it can. */
 export function pathTracingUnsupportedReason(renderer: THREE.WebGLRenderer): string | null {
   const gl = renderer.getContext();
@@ -32,6 +36,8 @@ export class PathTracer {
   private materialsDirty = true;
   private envDirty = true;
   private lastGeometryUpdate = 0;
+  /** Material list the tracer last uploaded, to tell a real material change from a moved object. */
+  private materialUuids: string[] = [];
   private initialised = false;
   private live = false;
   /** When true, the next frames accumulate without being capped (photo mode). */
@@ -191,6 +197,8 @@ export class PathTracer {
       this.view.scene.updateMatrixWorld(true);
       this.pt.setScene(this.view.scene, this.camera);
     });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    this.materialUuids = materialUuids((this.pt as any)._materials);
     this.initialised = true;
     this.sceneDirty = this.materialsDirty = this.envDirty = false;
     this.lastGeometryUpdate = performance.now();
@@ -219,10 +227,16 @@ export class PathTracer {
       }
       if (result.needsMaterialIndexUpdate) {
         material.materialIndexAttribute.updateFrom(result.geometry.attributes.materialIndex);
-        this.pt.updateMaterials();
-      } else if (this.materialsDirty) {
-        this.pt.updateMaterials();
       }
+      // The generator flags a material-index update whenever any geometry
+      // changed, i.e. on every physics step. updateMaterials() resets the
+      // accumulated image, so calling it then threw away every sample while
+      // the sim ran (a fresh 1-sample frame each time: pure grain). Only
+      // re-upload materials when the material list or a material really changed.
+      const uuids = materialUuids(result.materials);
+      const listChanged = uuids.length !== this.materialUuids.length || uuids.some((u, i) => u !== this.materialUuids[i]);
+      this.materialUuids = uuids;
+      if (listChanged || this.materialsDirty) this.pt.updateMaterials();
       if (this.envDirty) this.pt.updateEnvironment();
     });
     this.sceneDirty = this.materialsDirty = this.envDirty = false;
